@@ -222,6 +222,8 @@ Prototipe berjalan single-node Windows; dokumen mengakui gap berikut beserta jal
 | Monitoring | Spark UI manual | Prometheus + Grafana, alerting |
 | Kualitas data | Validasi inline di job | Great Expectations / data contract di pipeline |
 
+> **Catatan implementasi (Windows):** `hdfs.cmd` CLI di Hadoop-on-Windows memotong argumen path yang mengandung karakter `=` (partisi Hive-style seperti `dt=2026-07-09` menjadi `dt`). `src/ingest.py` karena itu menulis raw JSON ke HDFS lewat **WebHDFS REST API** (bukan `hdfs dfs -put`), yang tidak terpengaruh bug tersebut. Penulisan Parquet oleh Spark (batch/streaming) tidak terdampak karena dilakukan lewat Hadoop FileSystem API langsung, bukan CLI.
+
 ## 9. Ringkasan Pemenuhan Ketentuan Tugas
 
 | Ketentuan | Dipenuhi oleh |
