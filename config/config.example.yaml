@@ -1,0 +1,20 @@
+opensky:
+  client_id: "ISI_CLIENT_ID"
+  client_secret: "ISI_CLIENT_SECRET"
+  token_url: "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+  api_url: "https://opensky-network.org/api/states/all"
+  tiers:
+    java:     { lamin: -9.0,  lamax: -5.0, lomin: 105.0, lomax: 115.0, interval_s: 60 }
+    national: { lamin: -11.0, lamax: 6.0,  lomin: 95.0,  lomax: 141.0, interval_s: 900 }
+hdfs:
+  base: "hdfs://localhost:9000/bigdata/opensky"
+paths:
+  landing_stream: "D:/bigdata/landing_stream"
+  recordings: "D:/bigdata/recordings"
+  checkpoint: "hdfs://localhost:9000/bigdata/opensky/checkpoints/streaming_opensky"
+mongo:
+  uri: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+  db: "opensky"
+api:
+  host: "0.0.0.0"
+  port: 8000

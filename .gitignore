@@ -1,0 +1,26 @@
+# Local/non-deliverable material — hanya code, README.md, dan laporan yang di-commit
+already-have/
+task.txt
+.claude/
+
+# Secrets & local config
+config/config.yaml
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dist/
+
+# Data & runtime artifacts
+landing_stream/
+recordings/
+*.log
+
+# Spark/Hadoop local artifacts
+metastore_db/
+derby.log
+spark-warehouse/
