@@ -1,9 +1,40 @@
-"""Fungsi bersama dipakai oleh ingest.py dan batch_job.py — dijaga tetap DRY
-sesuai kontrak C1 (docs/design/CONTRACTS.md)."""
+"""Fungsi bersama dipakai oleh ingest.py, streaming_job.py dan batch_job.py —
+dijaga tetap DRY sesuai kontrak C1 (docs/design/CONTRACTS.md)."""
 import math
 from pathlib import Path
 
 import yaml
+from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, BooleanType
+
+# Skema baris NDJSON/DataFrame sesuai kontrak C1 (dipakai streaming_job & batch_job)
+STATES_SCHEMA = StructType(
+    [
+        StructField("icao24", StringType(), False),
+        StructField("callsign", StringType(), True),
+        StructField("origin_country", StringType(), True),
+        StructField("ts", LongType(), False),
+        StructField("lat", DoubleType(), False),
+        StructField("lon", DoubleType(), False),
+        StructField("baro_altitude_m", DoubleType(), True),
+        StructField("velocity_ms", DoubleType(), True),
+        StructField("true_track", DoubleType(), True),
+        StructField("vertical_rate", DoubleType(), True),
+        StructField("on_ground", BooleanType(), True),
+        StructField("squawk", StringType(), True),
+        StructField("tier", StringType(), False),
+        StructField("fetched_at", LongType(), True),
+    ]
+)
+
+# Bandara utama & sekitarnya (lat, lon) untuk agregasi airport_hourly
+AIRPORTS = {
+    "CGK": (-6.1256, 106.6559),
+    "HLP": (-6.2665, 106.8909),
+    "SUB": (-7.3798, 112.7869),
+    "JOG": (-7.7881, 110.4317),
+    "BDO": (-6.9006, 107.5762),
+}
+AIRPORT_RADIUS_DEG = 0.5
 
 # Index kolom array `states` pada respons OpenSky /api/states/all
 _IDX_ICAO24 = 0
@@ -32,9 +63,15 @@ def zone_for(lat, lon):
     return f"{math.floor(lat)}_{math.floor(lon)}"
 
 
+def _as_float(v):
+    return float(v) if v is not None else None
+
+
 def flatten(raw, tier, fetched_at):
     """Ubah respons mentah OpenSky (dict dengan key 'states') menjadi list dict
-    sesuai kontrak C1. Baris tanpa lat/lon/ts dibuang."""
+    sesuai kontrak C1. Baris tanpa lat/lon/ts dibuang. Field numerik dipaksa
+    float agar cocok dengan DoubleType saat dipakai bangun Spark DataFrame
+    (createDataFrame dgn skema eksplisit tidak auto-cast int->double)."""
     states = (raw or {}).get("states") or []
     out = []
     for s in states:
@@ -51,12 +88,12 @@ def flatten(raw, tier, fetched_at):
                 "callsign": callsign.strip() if callsign else None,
                 "origin_country": s[_IDX_ORIGIN_COUNTRY],
                 "ts": int(ts),
-                "lat": lat,
-                "lon": lon,
-                "baro_altitude_m": s[_IDX_BARO_ALTITUDE],
-                "velocity_ms": s[_IDX_VELOCITY],
-                "true_track": s[_IDX_TRUE_TRACK],
-                "vertical_rate": s[_IDX_VERTICAL_RATE],
+                "lat": _as_float(lat),
+                "lon": _as_float(lon),
+                "baro_altitude_m": _as_float(s[_IDX_BARO_ALTITUDE]),
+                "velocity_ms": _as_float(s[_IDX_VELOCITY]),
+                "true_track": _as_float(s[_IDX_TRUE_TRACK]),
+                "vertical_rate": _as_float(s[_IDX_VERTICAL_RATE]),
                 "on_ground": bool(s[_IDX_ON_GROUND]) if s[_IDX_ON_GROUND] is not None else None,
                 "squawk": s[_IDX_SQUAWK],
                 "tier": tier,

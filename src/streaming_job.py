@@ -12,40 +12,25 @@ kerumitan resolusi jar connector di Windows.
 Usage: python src/streaming_job.py [--config config/config.yaml]
 """
 import argparse
-import math
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows: perintah bare "python" bisa ke-intersep oleh Microsoft Store stub.
+# Paksa worker Spark pakai python venv yang sama dengan driver.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
 from pymongo import MongoClient, ReplaceOne
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, floor, to_timestamp, window, count, avg, concat_ws
-from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, BooleanType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import load_config  # noqa: E402
+from common import load_config, STATES_SCHEMA  # noqa: E402
 
 EMERGENCY_SQUAWKS = ("7500", "7600", "7700")
 DENSITY_SPIKE_FACTOR = 3.0
-
-SCHEMA = StructType(
-    [
-        StructField("icao24", StringType(), False),
-        StructField("callsign", StringType(), True),
-        StructField("origin_country", StringType(), True),
-        StructField("ts", LongType(), False),
-        StructField("lat", DoubleType(), False),
-        StructField("lon", DoubleType(), False),
-        StructField("baro_altitude_m", DoubleType(), True),
-        StructField("velocity_ms", DoubleType(), True),
-        StructField("true_track", DoubleType(), True),
-        StructField("vertical_rate", DoubleType(), True),
-        StructField("on_ground", BooleanType(), True),
-        StructField("squawk", StringType(), True),
-        StructField("tier", StringType(), False),
-        StructField("fetched_at", LongType(), True),
-    ]
-)
 
 
 def _as_file_uri(path: str) -> str:
@@ -59,7 +44,7 @@ def _as_file_uri(path: str) -> str:
 def build_base_stream(spark, cfg):
     df = (
         spark.readStream.format("json")
-        .schema(SCHEMA)
+        .schema(STATES_SCHEMA)
         .option("maxFilesPerTrigger", 10)
         .load(_as_file_uri(cfg["paths"]["landing_stream"]))
     )
