@@ -6,6 +6,7 @@ zone_stats, alerts) ke semua klien yang terhubung, plus snapshot awal saat
 connect.
 """
 import asyncio
+import re
 import sys
 import threading
 import time
@@ -34,6 +35,9 @@ app.add_middleware(
 )
 
 _WATCHED_COLLECTIONS = {"live_states", "zone_stats", "alerts"}
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_refresh_lock = asyncio.Lock()
 
 
 def _serialize_doc(doc):
@@ -117,6 +121,41 @@ def history_density(date: str):
         lat_str, lon_str = zone.split("_")
         cells.append({"zone": zone, "lat": int(lat_str), "lon": int(lon_str), "count": count})
     return {"date": date, "cells": cells}
+
+
+@app.post("/api/history/refresh")
+async def history_refresh(date: str):
+    if not _DATE_RE.match(date):
+        raise HTTPException(status_code=400, detail="date harus format YYYY-MM-DD")
+
+    if _refresh_lock.locked():
+        raise HTTPException(status_code=409, detail="Refresh lain sedang berjalan, coba lagi sebentar")
+
+    async with _refresh_lock:
+        repo_root = Path(__file__).resolve().parent.parent
+        try:
+            # "spark-submit" alone won't launch here: it's a .cmd script, and
+            # asyncio.create_subprocess_exec calls CreateProcess directly
+            # (no shell), which doesn't do PATHEXT resolution the way an
+            # interactive PowerShell/cmd session does.
+            proc = await asyncio.create_subprocess_exec(
+                "spark-submit.cmd",
+                "src/batch_job.py",
+                "--date",
+                date,
+                cwd=str(repo_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Gagal menjalankan spark-submit: {exc}")
+
+    if proc.returncode != 0:
+        tail = stderr.decode(errors="replace")[-2000:]
+        raise HTTPException(status_code=500, detail=f"batch_job.py gagal (exit {proc.returncode}): {tail}")
+
+    return {"date": date, "status": "ok"}
 
 
 @app.get("/api/live/states")
