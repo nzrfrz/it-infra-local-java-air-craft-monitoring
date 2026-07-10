@@ -186,18 +186,24 @@ def main():
         spark.stop()
         return
 
-    states_clean.write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/states_clean")
+    # coalesce sebelum menulis -- volume harian di skala ini (ratusan/ribuan baris)
+    # tidak butuh paralelisme default Spark (200 partisi -> 200 file kecil per
+    # partisi dt, "small files problem" klasik Hadoop yang juga bikin lambat
+    # dibaca balik lewat WebHDFS satu-per-satu di serving API)
+    states_clean.coalesce(4).write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/states_clean")
 
     density_grid_hourly = aggregate_density_grid_hourly(states_clean, date_str)
-    density_grid_hourly.write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/density_grid_hourly")
+    density_grid_hourly.coalesce(1).write.mode("overwrite").partitionBy("dt").parquet(
+        f"{curated_base}/density_grid_hourly"
+    )
 
     airport_hourly = aggregate_airport_hourly(states_clean, date_str)
-    airport_hourly.write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/airport_hourly")
+    airport_hourly.coalesce(1).write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/airport_hourly")
 
     summary_df, top_airlines, total_records, unique_aircraft, busiest_hour = aggregate_daily_summary(
         states_clean, density_grid_hourly, date_str, spark
     )
-    summary_df.write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/daily_summary")
+    summary_df.coalesce(1).write.mode("overwrite").partitionBy("dt").parquet(f"{curated_base}/daily_summary")
 
     write_daily_snapshot_to_mongo(cfg, date_str, total_records, unique_aircraft, busiest_hour, top_airlines)
 
