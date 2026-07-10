@@ -64,16 +64,23 @@ async def history_refresh(date: str):
 
     async with _refresh_lock:
         repo_root = Path(__file__).resolve().parent.parent
-        proc = await asyncio.create_subprocess_exec(
-            "spark-submit",
-            "src/batch_job.py",
-            "--date",
-            date,
-            cwd=str(repo_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
+        try:
+            # "spark-submit" alone won't launch here: it's a .cmd script, and
+            # asyncio.create_subprocess_exec calls CreateProcess directly
+            # (no shell), which doesn't do PATHEXT resolution the way an
+            # interactive PowerShell/cmd session does.
+            proc = await asyncio.create_subprocess_exec(
+                "spark-submit.cmd",
+                "src/batch_job.py",
+                "--date",
+                date,
+                cwd=str(repo_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Gagal menjalankan spark-submit: {exc}")
 
     if proc.returncode != 0:
         tail = stderr.decode(errors="replace")[-2000:]
