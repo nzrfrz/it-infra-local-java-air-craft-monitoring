@@ -21,6 +21,15 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function postJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? res.statusText);
+  }
+  return res.json();
+}
+
 export { ApiError };
 
 export function fetchSummary(date: string) {
@@ -33,6 +42,10 @@ export function fetchHourly(date: string) {
 
 export function fetchDensity(date: string) {
   return getJson<DensityResponse>(`/api/history/density?date=${date}`);
+}
+
+export function refreshHistory(date: string) {
+  return postJson<{ date: string; status: string }>(`/api/history/refresh?date=${date}`);
 }
 
 export function fetchLiveStates() {
