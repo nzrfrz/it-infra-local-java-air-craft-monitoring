@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ApiError, fetchDensity, fetchHourly, fetchSummary, refreshHistory } from "../lib/api";
+import { ApiError, fetchAvailableDates, fetchDensity, fetchHourly, fetchSummary, refreshHistory } from "../lib/api";
 import type { DailySummary, DensityCell, HourlyBucket } from "../types";
 import { DensityHeatmap } from "./DensityHeatmap";
 
@@ -38,6 +38,19 @@ export function HistoryView() {
     loadAll(date);
   }, [date, loadAll]);
 
+  // Tanggal mana yang benar-benar punya raw data di HDFS -- dipakai buat
+  // disable tombol UPDATE sebelum user klik, bukan cuma nunggu 404 balik.
+  // null = belum selesai fetch (jangan disable dulu, hindari flicker).
+  const [availableDates, setAvailableDates] = useState<Set<string> | null>(null);
+
+  useEffect(() => {
+    fetchAvailableDates()
+      .then((r) => setAvailableDates(new Set(r.dates)))
+      .catch(() => setAvailableDates(null));
+  }, []);
+
+  const hasRawData = availableDates === null || availableDates.has(date);
+
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -67,12 +80,16 @@ export function HistoryView() {
         />
         <button
           type="button"
-          disabled={refreshing}
+          disabled={refreshing || !hasRawData}
           onClick={handleRefresh}
+          title={hasRawData ? undefined : "Tidak ada data live/raw dari ingest untuk tanggal ini -- tidak ada yang bisa di-update"}
           className="rounded border border-hairline bg-void px-3 py-1 tracking-widest text-text-dim hover:text-phosphor disabled:cursor-not-allowed disabled:opacity-50"
         >
           {refreshing ? "MEMPROSES..." : "UPDATE"}
         </button>
+        {!hasRawData && !refreshError && (
+          <span className="text-[10px] text-text-dim">Tidak ada data live/raw untuk tanggal ini</span>
+        )}
         {refreshError && <span className="text-[10px] text-red-400">{refreshError}</span>}
       </div>
 

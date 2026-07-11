@@ -48,6 +48,10 @@ export function refreshHistory(date: string) {
   return postJson<{ date: string; status: string }>(`/api/history/refresh?date=${date}`);
 }
 
+export function fetchAvailableDates() {
+  return getJson<{ dates: string[] }>(`/api/history/available-dates`);
+}
+
 export function fetchLiveStates() {
   return getJson<{ states: LiveState[] }>(`/api/live/states`);
 }
