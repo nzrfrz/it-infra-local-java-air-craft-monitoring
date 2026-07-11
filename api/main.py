@@ -148,7 +148,12 @@ async def history_refresh(date: str):
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await proc.communicate()
-        except OSError as exc:
+        except (OSError, NotImplementedError) as exc:
+            # NotImplementedError muncul kalau proses ini kebetulan jalan di
+            # bawah asyncio.SelectorEventLoop (mis. uvicorn --reload di
+            # Windows memaksa loop worker-nya jadi Selector, bukan Proactor)
+            # -- Selector loop tidak bisa spawn subprocess sama sekali di
+            # Windows. Jangan jalankan uvicorn dengan --reload di sini.
             raise HTTPException(status_code=500, detail=f"Gagal menjalankan spark-submit: {exc}")
 
     if proc.returncode != 0:

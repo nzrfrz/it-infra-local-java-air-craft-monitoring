@@ -75,7 +75,13 @@ Set-Location '$root'
 }
 
 Write-Output "`n=== 2/4: FastAPI (port 8000) [$Shell] ==="
-Start-Component -Title "API - uvicorn" -Exe $venvPy -Arguments "-m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000"
+# TIDAK pakai --reload: di Windows, worker uvicorn --reload jalan di bawah
+# asyncio.SelectorEventLoop (bukan ProactorEventLoop), dan Selector loop
+# tidak bisa spawn subprocess sama sekali -> endpoint /api/history/refresh
+# (asyncio.create_subprocess_exec ke spark-submit.cmd) selalu gagal dengan
+# NotImplementedError kalau --reload aktif. Restart manual window ini kalau
+# edit api/main.py.
+Start-Component -Title "API - uvicorn" -Exe $venvPy -Arguments "-m uvicorn api.main:app --host 0.0.0.0 --port 8000"
 
 Write-Output "=== 3/4: ingest.py (poller OpenSky) [$Shell] ==="
 Start-Component -Title "Ingest" -Exe $venvPy -Arguments "src\ingest.py"
