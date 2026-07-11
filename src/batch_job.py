@@ -176,6 +176,15 @@ def main():
 
     spark = SparkSession.builder.appName("opensky-batch").getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
+    # PENTING: mode "overwrite" + partitionBy("dt") default-nya "static" --
+    # itu artinya SELURUH direktori output dihapus dulu sebelum menulis,
+    # bukan cuma partisi dt=<tanggal> yang sedang diproses. Efeknya: tiap
+    # kali batch_job.py jalan untuk satu tanggal, curated data tanggal LAIN
+    # ikut terhapus diam-diam (ditemukan lewat History tab yang mendadak
+    # 404 lagi untuk tanggal yang sebelumnya sudah berhasil). "dynamic" bikin
+    # overwrite cuma menimpa partisi yang ada di DataFrame yang sedang
+    # ditulis, partisi tanggal lain tidak disentuh.
+    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     # Worker python (proses terpisah) tidak mewarisi sys.path driver -- kirim
     # common.py eksplisit supaya `flatten()` bisa di-import di dalam flatMap.
     spark.sparkContext.addPyFile(str(Path(__file__).resolve().parent / "common.py"))
