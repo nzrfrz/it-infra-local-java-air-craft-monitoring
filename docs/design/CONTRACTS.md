@@ -47,7 +47,8 @@ Field boleh `null` kecuali `icao24`, `ts`, `lat`, `lon`, `tier`. Raw HDFS menyim
 GET /api/history/summary?date=YYYY-MM-DD   → dokumen daily_snapshot (404 jika belum ada)
 GET /api/history/hourly?date=YYYY-MM-DD    → {date, hours:[{hour:0-23, aircraft_count, avg_velocity_ms}]}
 GET /api/history/density?date=YYYY-MM-DD   → {date, cells:[{zone:"-7_110", lat:-7, lon:110, count}]}
-POST /api/history/refresh?date=YYYY-MM-DD  → jalankan batch_job.py utk tanggal itu (blocking, ~30s), balas {date, status:"ok"} (400 date invalid, 409 refresh lain masih jalan, 500 batch gagal)
+POST /api/history/refresh?date=YYYY-MM-DD  → jalankan batch_job.py utk tanggal itu (blocking, ~30s), balas {date, status:"ok"} (400 date invalid, 404 raw HDFS belum ada utk tanggal itu, 409 refresh lain masih jalan, 500 batch gagal)
+GET /api/history/available-dates           → {dates:["2026-07-09", ...]}  tanggal yg punya raw data di HDFS (dt=YYYY-MM-DD di bawah raw/) -- dipakai frontend utk disable tombol Update kalau tanggal yg dipilih tidak mungkin di-refresh
 GET /api/live/states                       → {states:[<dokumen live_states>]}  (snapshot awal utk frontend)
 WS  /ws/live                               → pesan JSON: {"channel":"live_states"|"zone_stats"|"alerts"|"snapshot", "data":{<dokumen>}}
 ```

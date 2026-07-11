@@ -20,7 +20,7 @@ from pymongo import MongoClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from common import load_config  # noqa: E402
 
-from api.hdfs_read import ParquetPartitionNotFound, read_partition  # noqa: E402
+from api.hdfs_read import ParquetPartitionNotFound, list_raw_dates, read_partition  # noqa: E402
 
 cfg = load_config()
 mongo_client = MongoClient(cfg["mongo"]["uri"])
@@ -121,6 +121,11 @@ def history_density(date: str):
         lat_str, lon_str = zone.split("_")
         cells.append({"zone": zone, "lat": int(lat_str), "lon": int(lon_str), "count": count})
     return {"date": date, "cells": cells}
+
+
+@app.get("/api/history/available-dates")
+def history_available_dates():
+    return {"dates": list_raw_dates(cfg["hdfs"]["base"])}
 
 
 @app.post("/api/history/refresh")

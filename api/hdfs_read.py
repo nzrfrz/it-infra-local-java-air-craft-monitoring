@@ -6,6 +6,7 @@ jadi baca lewat WebHDFS (LISTSTATUS + OPEN) lalu parse bytes-nya dengan
 pyarrow.parquet, bukan lewat filesystem HDFS native.
 """
 import io
+import re
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -31,6 +32,9 @@ class ParquetPartitionNotFound(Exception):
     """Partisi dt=<tanggal> belum ada di curated zone (batch job belum jalan)."""
 
 
+_DT_DIR_RE = re.compile(r"^dt=(\d{4}-\d{2}-\d{2})$")
+
+
 def _list_status(hdfs_path):
     resp = requests.get(f"{_WEBHDFS_BASE}{hdfs_path}", params={"op": "LISTSTATUS"}, timeout=15)
     if resp.status_code == 404:
@@ -43,6 +47,27 @@ def _read_file_bytes(hdfs_path):
     resp = requests.get(f"{_WEBHDFS_BASE}{hdfs_path}", params={"op": "OPEN"}, timeout=30)
     resp.raise_for_status()
     return resp.content
+
+
+def list_raw_dates(hdfs_base: str) -> list[str]:
+    """List tanggal (dt=YYYY-MM-DD) yang punya raw data di HDFS -- dipakai
+    frontend supaya tombol UPDATE History tahu tanggal mana yang benar-benar
+    bisa di-batch (ada raw data), bukan cuma tanggal mana yang sudah pernah
+    di-batch (itu urusan curated/, bukan raw/)."""
+    hdfs_root = urlparse(hdfs_base).path or "/"
+    raw_dir = f"{hdfs_root}/raw"
+    try:
+        statuses = _list_status(raw_dir)
+    except ParquetPartitionNotFound:
+        return []
+    dates = []
+    for s in statuses:
+        if s["type"] != "DIRECTORY":
+            continue
+        m = _DT_DIR_RE.match(s["pathSuffix"])
+        if m:
+            dates.append(m.group(1))
+    return sorted(dates)
 
 
 def read_partition(hdfs_base: str, dataset: str, date_str: str) -> pa.Table:
