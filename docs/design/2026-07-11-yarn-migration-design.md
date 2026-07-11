@@ -323,6 +323,45 @@ di-rollback ke kondisi semula — diverifikasi lewat RM REST API kembali ke
 tidak dicoba lagi kecuali versi Hadoop yang lebih baru (atau patch khusus)
 terbukti memperbaiki bug pembungkusan classpath jar ini di Windows.
 
+## Yang tetap dipakai: YARN lewat MapReduce native (bukan Spark)
+
+Setelah migrasi Spark-on-YARN dibatalkan (§Hasil eksekusi), muncul
+pertanyaan wajar: apakah YARN yang sudah ter-install jadi sia-sia? Jawaban:
+tidak — YARN dipakai lewat jalur kode **MapReduce native (Hadoop
+Streaming)**, yang terbukti tidak kena bug classpath-jar yang sama (lihat
+§Dibandingkan dengan referensi lain di atas: `hadoop jar ... wordcount`
+sukses lewat YARN sejak awal).
+
+Diimplementasikan: **`density_grid_hourly` versi Hadoop Streaming**
+(Python mapper/reducer) sebagai job pembanding dari agregasi yang sama
+yang sudah dihasilkan `batch_job.py` (Spark, `local[*]`) — bukan
+pengganti. File: `src/mapreduce/{density_grid_mapper,density_grid_reducer,
+stage_raw,upload_to_hdfs}.py`, runner `scripts/run_yarn_density_grid.ps1`.
+
+**Terbukti jalan**: `job_..._0003 completed successfully`, 217 map task +
+1 reduce task, terlihat SUCCEEDED di RM UI `http://localhost:8088`, hasil
+semantiknya masuk akal (grid sekitar Jakarta/CGK-HLP menunjukkan traffic
+tertinggi). Job ini **tidak** melakukan dedup global `(icao24, ts)` seperti
+`batch_job.py`, jadi angkanya sedikit lebih tinggi — pembanding/demo,
+bukan sumber data API/frontend.
+
+4 bug Windows-spesifik baru ditemukan di jalur ini (beda dari bug
+Spark-on-YARN di atas — lihat detail lengkap di `what-have-done.md` "Sesi
+2026-07-11 (lanjutan #2)"):
+1. `hadoop.cmd` memotong argumen yang mengandung `=` (sama seperti bug
+   `hdfs dfs -put dt=...`) — kena `-input`/`-output` path `raw/dt=<tanggal>`.
+   Fix: staging ke path tanpa `=` lewat WebHDFS murni.
+2. Git Bash resolve `hadoop` ke script shell Unix (bukan `hadoop.cmd`) —
+   classpath rusak. Fix: panggil `hadoop.cmd` eksplisit, atau pakai
+   PowerShell.
+3. PowerShell `$ErrorActionPreference = "Stop"` menganggap baris log
+   stderr biasa dari Hadoop sebagai `NativeCommandError` fatal walau exit
+   code 0. Fix: `"Continue"` + cek `$LASTEXITCODE` eksplisit.
+4. `-file`/`-files` (opsi Hadoop Streaming utk kirim file lokal) tidak
+   reliable di Windows utk >1 file, di lokasi mana pun. Fix yang terbukti
+   jalan: bundel semua file jadi satu `.zip`, upload ke HDFS, kirim lewat
+   `-archives hdfs://.../nama.zip#alias`.
+
 ## Out of scope
 
 - Multi-node YARN (tetap 1 NodeManager, di mesin yang sama) — ini menutup

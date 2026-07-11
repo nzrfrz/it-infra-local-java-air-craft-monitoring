@@ -58,7 +58,7 @@ Arsitektur mengikuti **pola Lambda**: *batch layer* untuk akurasi & analisis men
 │  HDFS  = data lake (raw zone + curated zone, format Parquet)        │
 │  MongoDB = serving layer NoSQL (state real-time + alert + agregat)  │
 ├─────────────────────────────────────────────────────────────────────┤
-│ PEMROSESAN            (resource manager: YARN, --deploy-mode client)│
+│ PEMROSESAN                                                          │
 │  BATCH  : batch_job.py (PySpark, dijadwalkan harian)                │
 │           raw JSON → flatten state vectors → dedup → agregasi:      │
 │           kepadatan per grid 0.5°×0.5° per jam, jam tersibuk per    │
@@ -72,9 +72,10 @@ Arsitektur mengikuti **pola Lambda**: *batch layer* untuk akurasi & analisis men
 │           • squawk darurat 7500/7600/7700                           │
 │           • lonjakan kepadatan zona (> μ+3σ baseline)               │
 │           → sink MongoDB; checkpoint → HDFS (fault tolerance)       │
-│           (kedua job submit sbg aplikasi YARN terpisah, driver di   │
-│           mesin lokal (client mode), executor sbg container YARN —  │
-│           lihat 2026-07-11-yarn-migration-design.md)                │
+│           (kedua job jalan `local[*]` — migrasi ke YARN dicoba &     │
+│           dibatalkan, lihat §5 dan 2026-07-11-yarn-migration-        │
+│           design.md; YARN tetap dipakai lewat MapReduce native utk   │
+│           job pembanding density_grid_hourly, di luar Lambda ini)    │
 ├─────────────────────────────────────────────────────────────────────┤
 │ SERVING API                                                         │
 │  api/ (FastAPI)                                                     │
@@ -157,7 +158,7 @@ Raw disimpan apa adanya (schema-on-read) agar bisa diproses ulang; curated pakai
 | NoSQL serving | **MongoDB** | HBase, Cassandra, Redis | Dokumen JSON cocok dengan payload API, upsert + TTL index native (pas untuk state live yang kedaluwarsa), konektor Spark resmi, jauh lebih mudah dioperasikan di Windows daripada HBase; HBase unggul jika throughput tulis masif — tidak relevan pada skala ini |
 | Batch | **Spark (PySpark)** | Hadoop MapReduce, pandas | In-memory → jauh lebih cepat dari MapReduce, API DataFrame ekspresif; pandas tidak scale-out |
 | Streaming | **Spark Structured Streaming** | Flink, Kafka Streams | Satu engine & satu codebase dengan batch (menekan kompleksitas Lambda), exactly-once via checkpoint+WAL, sudah terinstall |
-| Resource manager Spark | **YARN** (`--master yarn --deploy-mode client`, 1 NodeManager) | `local[*]` (default Spark, tanpa resource manager), Kubernetes | Hadoop yang dipakai sudah termasuk YARN — dipakai sungguhan alih-alih dilewati lewat default Spark, supaya pemisahan resource-manager/executor yang dituntut skala big data benar-benar teruji, bukan cuma didokumentasikan di §8 sebagai gap. `client` mode dipilih drpd `cluster` supaya log driver tetap bisa dipantau langsung di terminal (lihat 2026-07-11-yarn-migration-design.md) |
+| Resource manager Spark | **`local[*]`** (default Spark) | **YARN** (`--master yarn`, dicoba 2026-07-11, **dibatalkan** — lihat catatan di bawah), Kubernetes | Migrasi ke YARN sempat dicoba supaya pemisahan resource-manager/executor benar-benar teruji, bukan cuma didokumentasikan di §8 sebagai gap — tapi Spark-on-YARN terbukti tidak bisa jalan di Hadoop 3.3.6/Windows mesin ini (bug classpath-jar Hadoop sendiri, dikonfirmasi lewat 5 percobaan independen, detail di `2026-07-11-yarn-migration-design.md` §Hasil eksekusi). YARN sendiri tetap dipakai lewat **MapReduce native (Hadoop Streaming)** untuk job pembanding `density_grid_hourly` (lihat `2026-07-11-yarn-migration-design.md` §Yang tetap dipakai) — jalur kode itu tidak kena bug yang sama karena tidak lewat classpath-builder Spark |
 | Transport streaming | **File source** | Kafka | Pada prototipe single-node, Kafka menambah komponen tanpa nilai demonstratif; file source didukung resmi & tetap fault-tolerant. **Di produksi, Kafka menggantikan folder landing** (buffering, replay, multi-consumer) — lihat §8 |
 | Serving API | **FastAPI** | Flask, Express (Node) | Async native (pas untuk WebSocket + change stream), satu bahasa dengan pipeline (akses pymongo/PyArrow langsung), dokumentasi OpenAPI otomatis |
 | Dashboard | **React SPA (Vite) + deck.gl/MapLibre** | Streamlit, Next.js, Grafana | Update realtime via WebSocket push — marker pesawat bergerak tanpa refresh halaman (Streamlit selalu re-render per interval). Next.js dipertimbangkan namun ditolak: React Server Components dirender saat request — tidak membantu jalur realtime yang tetap butuh WebSocket di client, sementara menambah server Node di samping FastAPI. deck.gl efisien merender ratusan marker bergerak |
@@ -171,8 +172,8 @@ Mekanisme bawaan yang diandalkan:
 - **Structured Streaming checkpointing**: offset & state disimpan ke direktori checkpoint di HDFS; query yang mati bisa restart tanpa kehilangan/duplikasi (exactly-once ke sink idempoten — upsert MongoDB berdasarkan kunci `icao24` / `(zona, window)` bersifat idempoten)
 - **Idempotensi ingest**: nama file berbasis `(tier, timestamp snapshot)` → retry tidak menduplikasi data; dedup ulang di batch sebagai lapisan kedua
 - **Toleransi kegagalan API**: retry dengan exponential backoff; jika OpenSky down, streaming tetap hidup (tidak ada file baru = tidak ada micro-batch, bukan error)
-- **Spark task retry**: kegagalan task/executor di-retry otomatis oleh scheduler
-- **YARN container recovery**: dengan Spark jalan lewat YARN (§3, §5), ada lapisan retry tambahan di atas retry task Spark sendiri — kalau NodeManager mematikan/kehilangan sebuah executor container, YARN ResourceManager menjadwalkan ulang container baru untuk aplikasi yang sama, bukan cuma Spark scheduler yang retry task di dalam container yang sama
+- **Spark task retry**: kegagalan task/executor di-retry otomatis oleh scheduler (Spark tetap `local[*]` — migrasi ke YARN dicoba & dibatalkan, lihat §5)
+- **YARN container recovery (MapReduce, bukan Spark)**: job pembanding `density_grid_hourly` (Hadoop Streaming, §5) jalan sungguhan lewat YARN — kalau NodeManager kehilangan sebuah container, YARN ResourceManager menjadwalkan ulang container baru untuk aplikasi yang sama; ini teruji nyata untuk job MapReduce itu, bukan untuk `batch_job.py`/`streaming_job.py` yang tetap `local[*]`
 
 Validasi lewat 3 eksperimen chaos (dijalankan di lab, blast radius = 0 pengguna eksternal):
 
@@ -180,7 +181,7 @@ Validasi lewat 3 eksperimen chaos (dijalankan di lab, blast radius = 0 pengguna 
 |---|---|---|---|---|
 | 1 | Kill DataNode saat batch job | Job selesai bila replikasi ≥2; pada replikasi 1 job gagal — didokumentasikan sebagai temuan | exit code 0, `hdfs fsck` 0 missing block | restart DataNode, verifikasi fsck |
 | 2 | Sumber data lambat/error (inject sleep 5 dtk + 20% error di ingestor) | Streaming lanjut, latensi naik gracefully, tidak ada record hilang setelah pulih | `numInputRows`>0/batch, checkpoint maju | cabut injeksi, rekonsiliasi row count |
-| 3 | Kill executor saat streaming (lewat YARN — `yarn application -kill`/matikan NodeManager, bukan `taskkill` proses JVM lokal, sejak Spark dipindah ke YARN §3/§5) | Maksimal 1 micro-batch tertunda; recovery dari checkpoint tanpa duplikat, di-restart oleh YARN sendiri | `processedRowsPerSecond` stabil | restart query dari checkpoint; ukur MTTR |
+| 3 | Kill executor saat streaming (`taskkill` proses JVM lokal — `streaming_job.py` tetap `local[*]`, migrasi ke YARN dibatalkan, §5) | Maksimal 1 micro-batch tertunda; recovery dari checkpoint tanpa duplikat | `processedRowsPerSecond` stabil | restart query dari checkpoint; ukur MTTR |
 
 Hasil tiap eksperimen dicatat: hipotesis terbukti/terbantah, waktu pemulihan, tindak lanjut.
 
@@ -221,7 +222,7 @@ Prototipe berjalan single-node Windows; dokumen mengakui gap berikut beserta jal
 |---|---|---|
 | Akuisisi | Polling REST 45 dtk (kuota 4.000 kredit) | Feed ADS-B langsung / lisensi komersial FlightAware, receiver sendiri |
 | Transport streaming | Folder file lokal | **Kafka** (buffering, replay, multi-consumer, backpressure) |
-| Cluster | Single-node **dengan YARN** (1 NodeManager, `--deploy-mode client`), replikasi HDFS 1 | Multi-node YARN/Kubernetes, replikasi 3, HA NameNode, HA ResourceManager |
+| Cluster | Single-node, Spark `local[*]` (YARN dicoba utk Spark & dibatalkan — bug Hadoop-on-Windows, §5; YARN tetap dipakai utk job MapReduce pembanding), replikasi HDFS 1 | Multi-node YARN/Kubernetes, replikasi 3, HA NameNode, HA ResourceManager |
 | Orkestrasi | Task Scheduler | **Airflow** (dependensi, retry, SLA, backfill) |
 | Keamanan | Kredensial di config lokal | Kerberos/Ranger, TLS, secret manager |
 | Monitoring | Spark UI manual | Prometheus + Grafana, alerting |
@@ -229,7 +230,7 @@ Prototipe berjalan single-node Windows; dokumen mengakui gap berikut beserta jal
 
 > **Catatan implementasi (Windows):** `hdfs.cmd` CLI di Hadoop-on-Windows memotong argumen path yang mengandung karakter `=` (partisi Hive-style seperti `dt=2026-07-09` menjadi `dt`). `src/ingest.py` karena itu menulis raw JSON ke HDFS lewat **WebHDFS REST API** (bukan `hdfs dfs -put`), yang tidak terpengaruh bug tersebut. Penulisan Parquet oleh Spark (batch/streaming) tidak terdampak karena dilakukan lewat Hadoop FileSystem API langsung, bukan CLI.
 
-> **Catatan implementasi (YARN):** keputusan & detail migrasi dari `local[*]` ke `--master yarn --deploy-mode client` (sizing executor, kenapa `client` bukan `cluster`, risiko spesifik Windows) didokumentasikan terpisah di `docs/design/2026-07-11-yarn-migration-design.md`; langkah eksekusinya di `docs/plans/2026-07-11-yarn-migration.md`. Baris "Cluster" di tabel §8 di atas dan skenario chaos #3 di §6 mengikuti keputusan itu.
+> **Catatan implementasi (YARN):** migrasi Spark (`batch_job.py`/`streaming_job.py`) dari `local[*]` ke `--master yarn` dicoba 2026-07-11 dan **dibatalkan** — bug genuine di Hadoop 3.3.6-on-Windows (mekanisme classpath-jar tidak meng-expand token `{{PWD}}`/`<CPS>` sebelum menulis manifest, dikonfirmasi lewat 5 percobaan independen), bukan bug di kode/config project. Spark tetap `local[*]`. YARN sendiri tetap dipakai lewat **MapReduce native (Hadoop Streaming)** untuk job pembanding `density_grid_hourly` (`src/mapreduce/`, `scripts/run_yarn_density_grid.ps1`) — terbukti jalan (217 map task + 1 reduce task, SUCCEEDED), karena jalur kode MapReduce tidak lewat classpath-builder Spark yang buggy itu. Detail lengkap kedua investigasi ada di `docs/design/2026-07-11-yarn-migration-design.md` (§Hasil eksekusi = pembatalan Spark, §Yang tetap dipakai = MapReduce yang berhasil).
 
 ## 9. Ringkasan Pemenuhan Ketentuan Tugas
 
