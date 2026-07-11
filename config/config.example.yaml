@@ -9,8 +9,8 @@ opensky:
 hdfs:
   base: "hdfs://localhost:9000/bigdata/opensky"
 paths:
-  landing_stream: "D:/bigdata/landing_stream"
-  recordings: "D:/bigdata/recordings"
+  landing_stream: "./landing-stream-recording/landing_stream"
+  recordings: "./landing-stream-recording/recordings"
   checkpoint: "hdfs://localhost:9000/bigdata/opensky/checkpoints/streaming_opensky"
 mongo:
   uri: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"

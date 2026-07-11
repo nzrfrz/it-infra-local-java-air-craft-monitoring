@@ -22,6 +22,7 @@ for i in range(AIRCRAFT_COUNT):
     lat_floor, lon_floor = (int(x) for x in ZONES[i % len(ZONES)].split("_"))
     state[icao24] = {
         "_id": icao24,
+        "icao24": icao24,
         "callsign": f"{AIRLINES[i % len(AIRLINES)]}{100 + i}",
         "origin_country": "Indonesia",
         "lat": lat_floor - random.uniform(0, 0.9),

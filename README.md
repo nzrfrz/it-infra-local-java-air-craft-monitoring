@@ -42,7 +42,7 @@ docs/           # dokumen desain, kontrak, rencana implementasi, laporan
 
 ## Setup
 
-1. `python -m venv venv && venv\Scripts\activate` (Windows) lalu `pip install -r requirements.txt`
+1. Aktifkan venv bersama di root `#bigdata` (dipakai lintas project big data di mesin ini): `D:\Coding\#bigdata\venv\Scripts\activate` lalu `pip install -r requirements.txt`. Tidak ada `venv/` lokal di folder `it-infra`.
 2. Salin `config/config.example.yaml` → `config/config.yaml`, isi kredensial OpenSky (`opensky-network.org` → API client)
 3. Pastikan Hadoop/HDFS & MongoDB (replica set 1 node) sudah jalan — lihat `scripts/start_infra.ps1`
 4. Jalankan komponen sesuai kebutuhan (lihat masing-masing skrip di `src/`, `api/`, `web/`)

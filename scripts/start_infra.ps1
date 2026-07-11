@@ -7,8 +7,23 @@ Write-Output "=== Starting HDFS ==="
 & "$env:HADOOP_HOME\sbin\start-dfs.cmd"
 Start-Sleep -Seconds 10
 
-$safemode = & "$env:HADOOP_HOME\bin\hdfs.cmd" dfsadmin -safemode get 2>&1
-Write-Output "Safemode: $safemode"
+# NameNode start di safe mode sampai DataNode selesai kirim block report -
+# menulis (mkdirs/create) ditolak selama itu. Tunggu sampai benar-benar OFF
+# sebelum lanjut, supaya ingest.py/streaming_job.py yang jalan setelah script
+# ini tidak kena 403/mkdir gagal gara-gara race condition.
+Write-Output "Menunggu HDFS keluar dari safe mode..."
+$maxWait = 60
+$waited = 0
+do {
+    $safemode = & "$env:HADOOP_HOME\bin\hdfs.cmd" dfsadmin -safemode get 2>&1
+    if ($safemode -match "OFF") { break }
+    Start-Sleep -Seconds 3
+    $waited += 3
+} while ($waited -lt $maxWait)
+Write-Output "Safemode: $safemode (menunggu ${waited}s)"
+if ($safemode -notmatch "OFF") {
+    Write-Warning "HDFS masih safe mode setelah ${maxWait}s - cek DataNode (`hdfs dfsadmin -report`) sebelum lanjut jalankan ingest/streaming."
+}
 
 & "$env:HADOOP_HOME\bin\hdfs.cmd" dfs -mkdir -p /bigdata/opensky/raw /bigdata/opensky/curated /bigdata/opensky/checkpoints
 & "$env:HADOOP_HOME\bin\hdfs.cmd" dfs -ls /bigdata/opensky
@@ -21,11 +36,15 @@ if ($svc -and $svc.Status -ne "Running") {
 Get-Service -Name MongoDB
 
 Write-Output "`n=== Verifying MongoDB replica set ==="
-python -c "from pymongo import MongoClient; c = MongoClient('mongodb://localhost:27017/?replicaSet=rs0&directConnection=true', serverSelectionTimeoutMS=5000); s = c.admin.command('replSetGetStatus'); print('replica set:', s['set'], '| state:', s['myState'])"
+# Resolve python from the shared #bigdata venv explicitly - relying on bare
+# "python" can pick up a system/store install ahead of venv\Scripts on PATH.
+$py = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts\python.exe" } else { "D:\Coding\#bigdata\venv\Scripts\python.exe" }
+& $py -c "from pymongo import MongoClient; c = MongoClient('mongodb://localhost:27017/?replicaSet=rs0&directConnection=true', serverSelectionTimeoutMS=5000); s = c.admin.command('replSetGetStatus'); print('replica set:', s['set'], '| state:', s['myState'])"
 
 Write-Output "`n=== Local folders ==="
-New-Item -ItemType Directory -Force -Path "D:\bigdata\landing_stream" | Out-Null
-New-Item -ItemType Directory -Force -Path "D:\bigdata\recordings" | Out-Null
-Write-Output "landing_stream & recordings ready under D:\bigdata\"
+$dataRoot = Join-Path $PSScriptRoot "..\landing-stream-recording"
+New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot "landing_stream") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot "recordings") | Out-Null
+Write-Output "landing_stream & recordings ready under $dataRoot"
 
 Write-Output "`n=== Infra status: OK ==="

@@ -8,12 +8,29 @@ param(
     [string]$Date = $null
 )
 
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
+$ErrorActionPreference = "Stop"
+$root   = Split-Path -Parent $PSScriptRoot
+$venv   = "D:\Coding\#bigdata\venv"
+$venvPy = Join-Path $venv "Scripts\python.exe"
 
-$args = @("src\batch_job.py")
-if ($Date) {
-    $args += @("--date", $Date)
+if (-not (Test-Path $venvPy)) {
+    Write-Error "Venv bersama tidak ditemukan di $venvPy. Cek lokasi venv #bigdata."
+    exit 1
 }
 
-& ".\venv\Scripts\python.exe" @args
+Set-Location $root
+
+# PYSPARK_PYTHON/PYSPARK_DRIVER_PYTHON harus di-set SEBELUM spark-submit
+# dipanggil, bukan dari dalam batch_job.py - proses driver Spark sudah keburu
+# start pakai "python" polos dari PATH (lihat what-have-done.md, bug operasional
+# yang sama juga kena run_backend.ps1 utk streaming_job.py).
+$env:PATH = "$venv\Scripts;" + $env:PATH
+$env:PYSPARK_PYTHON = $venvPy
+$env:PYSPARK_DRIVER_PYTHON = $venvPy
+
+$sparkArgs = @("src\batch_job.py")
+if ($Date) {
+    $sparkArgs += @("--date", $Date)
+}
+
+& spark-submit @sparkArgs

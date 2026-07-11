@@ -2,6 +2,7 @@
 already-have/
 task.txt
 .claude/
+QNA.md
 
 # Secrets & local config
 config/config.yaml
@@ -16,6 +17,7 @@ node_modules/
 dist/
 
 # Data & runtime artifacts
+landing-stream-recording/
 landing_stream/
 recordings/
 *.log
@@ -24,3 +26,6 @@ recordings/
 metastore_db/
 derby.log
 spark-warehouse/
+
+# Generated launcher scripts (run_backend.ps1)
+scripts/.launch/
