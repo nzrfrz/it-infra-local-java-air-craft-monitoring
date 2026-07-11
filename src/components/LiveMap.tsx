@@ -8,10 +8,21 @@ import { RadarSweep } from "./RadarSweep";
 
 const EMERGENCY_SQUAWKS = new Set(["7500", "7600", "7700"]);
 
-const INITIAL_VIEW_STATE = {
-  longitude: 109.5,
-  latitude: -6.8,
-  zoom: 5.4,
+interface ViewState {
+  longitude: number;
+  latitude: number;
+  zoom: number;
+  pitch: number;
+  bearing: number;
+}
+
+// Pusat + zoom disesuaikan supaya seluruh bbox nasional (lat -11..6, lon 95..141
+// - lihat config.yaml tiers.national) langsung kelihatan saat load pertama,
+// bukan cuma zona Jawa.
+const INITIAL_VIEW_STATE: ViewState = {
+  longitude: 118,
+  latitude: -2.5,
+  zoom: 4.2,
   pitch: 0,
   bearing: 0,
 };
@@ -32,6 +43,11 @@ interface Props {
 
 export function LiveMap({ states }: Props) {
   const [hovered, setHovered] = useState<LiveState | null>(null);
+  // Kamera deck.gl (layer icon) dan MapLibre (basemap) sengaja di-controlled
+  // dari satu state yang sama - sinkronisasi implisit lewat children context
+  // (initialViewState saja) ternyata desync antara canvas icon vs basemap
+  // begitu user pan/zoom.
+  const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW_STATE);
 
   const layer = useMemo(
     () =>
@@ -54,15 +70,29 @@ export function LiveMap({ states }: Props) {
         updateTriggers: {
           getIcon: [states],
         },
+        // Posisi geser mulus antar update WS, bukan loncat instan ke titik baru.
+        transitions: {
+          getPosition: 8000,
+          getAngle: 8000,
+        },
       }),
     [states],
   );
 
   return (
     <div className="relative h-full w-full">
-      <DeckGL initialViewState={INITIAL_VIEW_STATE} controller layers={[layer]} style={{ position: "absolute" }}>
-        <div className="h-full w-full [filter:invert(1)_hue-rotate(180deg)_brightness(0.85)_contrast(0.9)_saturate(0.6)]">
-          <MapLibreMap mapStyle="https://demotiles.maplibre.org/style.json" />
+      <DeckGL
+        viewState={viewState}
+        onViewStateChange={({ viewState: vs }) => setViewState(vs as ViewState)}
+        controller
+        layers={[layer]}
+        style={{ position: "absolute" }}
+      >
+        {/* z-index eksplisit -1: canvas MapLibre harus di BELAKANG canvas
+            deck.gl (icon pesawat) - tanpa ini urutan DOM menempatkan basemap
+            di atas dan menutupi layer icon sepenuhnya secara visual. */}
+        <div className="absolute inset-0 -z-10 h-full w-full [filter:invert(1)_hue-rotate(180deg)_brightness(0.85)_contrast(0.9)_saturate(0.6)]">
+          <MapLibreMap {...viewState} mapStyle="https://demotiles.maplibre.org/style.json" />
         </div>
       </DeckGL>
       <RadarSweep />
