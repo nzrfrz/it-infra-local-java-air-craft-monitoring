@@ -1,5 +1,13 @@
 # YARN Migration Implementation Plan
 
+> **STATUS (2026-07-11): ABANDONED at Task 2.** A genuine Hadoop-3.3.6-on-Windows
+> bug (classpath-jar manifest never expanding `{{PWD}}`/`<CPS>` tokens) makes
+> Spark-on-YARN client/cluster mode unusable on this machine, confirmed via 5
+> independent reproductions. `yarn-site.xml` changes were rolled back; Spark
+> jobs remain on `local[*]`. Full root-cause writeup:
+> `docs/design/2026-07-11-yarn-migration-design.md` §Hasil eksekusi. Do not
+> re-attempt this plan without a different Hadoop version/patch.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Submit `streaming_job.py` and `batch_job.py` to YARN

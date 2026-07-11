@@ -260,6 +260,69 @@ biner "YARN semua atau tidak sama sekali", tapi tiap komponen
 (`batch_job.py` vs `streaming_job.py`) bisa independen pakai YARN atau
 local sampai keduanya benar-benar stabil.
 
+## Hasil eksekusi (2026-07-11, sesi lanjutan): DIBATALKAN — bug Hadoop-on-Windows
+
+Rencana ini dieksekusi sampai Task 2 (`docs/plans/2026-07-11-yarn-migration.md`)
+lalu **dihentikan permanen**. Risiko §1 di atas ("NodeManager container
+launch di Windows... belum pernah diuji") ternyata benar-benar terjadi,
+dan bukan sekadar masalah `winutils.exe`/PATH — root cause jauh lebih dalam.
+
+**Gejala:** setiap `spark-submit --master yarn` (baik `--deploy-mode client`
+maupun `cluster`, diverifikasi lewat PowerShell maupun `cmd.exe` langsung —
+bukan masalah shell) gagal dengan
+`Error: Could not find or load main class org.apache.spark.deploy.yarn.ExecutorLauncher`
+(client mode) / `...ApplicationMaster` (cluster mode).
+
+**Root cause (dikonfirmasi lewat inspeksi manifest classpath jar di
+`nm-local-dir/usercache/.../classpath-*.jar`, dengan
+`yarn.nodemanager.delete.debug-delay-sec` dinaikkan sementara supaya
+direktori container tidak langsung dihapus):** Spark's `Client.scala`
+membangun env var `CLASSPATH` container dengan token placeholder standar
+(`{{PWD}}`, `<CPS>`) yang seharusnya di-expand oleh NodeManager saat
+container benar-benar dijalankan — pola yang valid dan jalan normal di
+Linux. Karena string `CLASSPATH` gabungan ini kepanjangan untuk limit
+`cmd.exe` (~8191 karakter), Hadoop 3.3.6 di Windows membungkusnya jadi file
+`.jar` kecil (manifest `Class-Path`) sebagai workaround — **tapi kode
+pembungkus jar ini tidak meng-expand `{{PWD}}`/`<CPS>` dulu**, jadi 4
+fragment classpath yang seharusnya terpisah (termasuk
+`{{PWD}}/__spark_libs__/*`, satu-satunya yang memuat
+`spark-yarn_2.12-3.5.1.jar` berisi `ExecutorLauncher`/`ApplicationMaster`)
+malah numpuk jadi satu string mentah yang tidak pernah ke-resolve. Bug ini
+ada di Hadoop sendiri, bukan di config project.
+
+**Diverifikasi lewat 5 percobaan independen, semua gagal dengan signature
+identik byte-per-byte:**
+1. Staging default (`__spark_libs__` archive) — gagal.
+2. `spark.yarn.jars=local:...` (skip staging) — gagal, malah menyisipkan
+   literal string `"null"` di posisi path.
+3. `yarn.application.classpath` diperpendek ke `$HADOOP_CONF_DIR` saja
+   (menguji hipotesis "classpath kepanjangan gara-gara default yang
+   panjang") — gagal dengan manifest **identik byte-per-byte**, membuktikan
+   trigger-nya bukan soal panjang classpath sama sekali.
+4. `--deploy-mode cluster` (bukan `client`) lewat PowerShell — gagal sama.
+5. `--deploy-mode cluster` diulang lewat `cmd.exe` langsung (menyingkirkan
+   dugaan PowerShell-specific issue) — gagal sama persis.
+
+**Dibandingkan dengan referensi lain di mesin ini** (project
+`pyspark-test/benchmarking-hadoop-VS-pyspark`, yang sempat dikira bukti
+"YARN pernah jalan"): job `hadoop jar ... wordcount` (MapReduce native)
+memang sukses lewat YARN di mesin ini — tapi PySpark benchmark di project
+yang sama **selalu jalan `--master local[8]`, tidak pernah lewat YARN sama
+sekali**. MapReduce dan Spark membangun classpath container lewat jalur
+kode yang sama sekali berbeda (MapReduce tidak menggabungkan banyak
+fragment `<CPS>` jadi satu env value seperti `Client.scala`), jadi
+suksesnya MapReduce-di-YARN bukan bukti Spark-di-YARN bisa jalan di
+Hadoop 3.3.6-Windows ini.
+
+**Keputusan:** batalkan migrasi ke YARN. Semua perubahan `yarn-site.xml`
+(`yarn.nodemanager.resource.memory-mb`,
+`yarn.nodemanager.delete.debug-delay-sec`, `yarn.application.classpath`)
+di-rollback ke kondisi semula — diverifikasi lewat RM REST API kembali ke
+`totalMB: 8192`. `streaming_job.py`/`batch_job.py` **tetap jalan
+`local[*]`** seperti sebelum sesi ini, tanpa perubahan kode. Migrasi ini
+tidak dicoba lagi kecuali versi Hadoop yang lebih baru (atau patch khusus)
+terbukti memperbaiki bug pembungkusan classpath jar ini di Windows.
+
 ## Out of scope
 
 - Multi-node YARN (tetap 1 NodeManager, di mesin yang sama) — ini menutup
