@@ -51,6 +51,13 @@ def _tier_from_path(path: str) -> str:
     return m.group("tier") if m else "unknown"
 
 
+def _hdfs_path_exists(spark, path: str) -> bool:
+    hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+    jvm_path = spark._jvm.org.apache.hadoop.fs.Path(path)
+    fs = jvm_path.getFileSystem(hadoop_conf)
+    return fs.exists(jvm_path)
+
+
 def load_raw_as_rows(sc, raw_dir):
     """wholeTextFiles -> flatMap(common.flatten) -> list of dict rows."""
     files_rdd = sc.wholeTextFiles(raw_dir)
@@ -175,6 +182,15 @@ def main():
 
     raw_dir = f"{cfg['hdfs']['base']}/raw/dt={date_str}"
     curated_base = f"{cfg['hdfs']['base']}/curated"
+
+    if not _hdfs_path_exists(spark, raw_dir):
+        # Exit code khusus (bukan exception generik / stack trace Spark yang
+        # noise-nya beda-beda tiap run -- lihat api/main.py) supaya endpoint
+        # /api/history/refresh bisa bedakan "memang belum ada data" dari
+        # kegagalan job yang sesungguhnya secara deterministik.
+        print(f"[batch_job] raw_dir tidak ada: {raw_dir} -- ingest.py belum pernah jalan untuk tanggal ini")
+        spark.stop()
+        sys.exit(2)
 
     rows_rdd = load_raw_as_rows(spark.sparkContext, raw_dir)
     states_clean = build_states_clean(spark, rows_rdd, date_str).cache()

@@ -156,6 +156,16 @@ async def history_refresh(date: str):
             # Windows. Jangan jalankan uvicorn dengan --reload di sini.
             raise HTTPException(status_code=500, detail=f"Gagal menjalankan spark-submit: {exc}")
 
+    if proc.returncode == 2:
+        # Exit code 2 = sentinel deterministik dari batch_job.py: raw_dir HDFS
+        # untuk tanggal ini memang tidak ada (bukan kegagalan job). Jangan
+        # coba tebak dari isi stderr -- pesan gagal Spark generik (mis. race
+        # shutdown-hook deleteRecursively) berubah-ubah antar run dan tidak
+        # bisa dipakai sebagai sinyal yang bisa diandalkan.
+        raise HTTPException(
+            status_code=404,
+            detail=f"Belum ada data mentah (raw) untuk tanggal {date} -- ingest.py tidak berjalan pada tanggal itu",
+        )
     if proc.returncode != 0:
         tail = stderr.decode(errors="replace")[-2000:]
         raise HTTPException(status_code=500, detail=f"batch_job.py gagal (exit {proc.returncode}): {tail}")
