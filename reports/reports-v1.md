@@ -34,16 +34,17 @@ AKUISISI
   OpenSky API -> ingest.py (poller 2-tier: Jawa/60dtk, Indonesia/15mnt)
                     |
                     +--> HDFS raw/dt=.../*.json (arsip, schema-on-read)
-                    +--> landing_stream/ (NDJSON per snapshot, dikonsumsi streaming)
+                    +--> Kafka topic opensky.states (KRaft, 3 partisi,
+                         key=icao24 -- lihat §3.1 migrasi)
 
 PEMROSESAN
   BATCH  : batch_job.py (PySpark, harian) -> flatten + dedup + agregasi
            (kepadatan grid, jam tersibuk, distribusi altitude/velocity,
            top maskapai) -> Parquet HDFS curated + snapshot MongoDB
-  STREAM : streaming_job.py (Spark Structured Streaming) -> windowed agg
-           2 menit per zona (watermark 1 menit) + deteksi alert
-           (squawk darurat, lonjakan kepadatan) -> upsert MongoDB,
-           checkpoint ke HDFS
+  STREAM : streaming_job.py (Spark Structured Streaming, Kafka source)
+           -> windowed agg 2 menit per zona (watermark 1 menit) +
+           deteksi alert (squawk darurat, lonjakan kepadatan) ->
+           upsert MongoDB, checkpoint ke HDFS
            (kedua job jalan local[*] - lihat §6 soal migrasi YARN)
 
 SERVING & VISUALISASI
@@ -53,7 +54,13 @@ SERVING & VISUALISASI
                   panel historis (heatmap, tren) via REST, panel alert
 ```
 
-**Alur ringkas:** `ingest.py` menulis raw JSON ke HDFS + file kecil ke `landing_stream/` → batch job mengagregasi seluruh raw zone harian menjadi Parquet curated → streaming job mengagregasi window 2 menit dari `landing_stream/` ke MongoDB secara kontinu → FastAPI menjembatani MongoDB (live, via change stream + WebSocket) dan Parquet (historis, via REST) ke dashboard React.
+**Alur ringkas:** `ingest.py` menulis raw JSON ke HDFS + tiap pesawat sebagai 1 pesan ke Kafka topic `opensky.states` → batch job mengagregasi seluruh raw zone harian menjadi Parquet curated → streaming job mengonsumsi Kafka topic secara kontinu, mengagregasi window 2 menit ke MongoDB → FastAPI menjembatani MongoDB (live, via change stream + WebSocket) dan Parquet (historis, via REST) ke dashboard React.
+
+### 3.1 Migrasi transport streaming: file lokal → Kafka
+
+Prototipe awal memakai folder lokal `landing_stream/` (NDJSON) sebagai transport antara `ingest.py` dan `streaming_job.py` — cukup untuk jalur streaming yang berdiri sendiri, tapi tidak punya buffering/replay kalau consumer berhenti sesaat. Pada 2026-07-12, transport ini dimigrasikan ke **Kafka** (native Windows, mode KRaft tanpa ZooKeeper, topic `opensky.states`, 3 partisi, replication-factor 1). Format payload JSON per pesan **tidak berubah** dari kontrak NDJSON lama (lihat `docs/design/CONTRACTS.md` §C1) — hanya medium transportnya yang berubah. Detail keputusan: `docs/design/2026-07-12-kafka-migration-design.md`.
+
+**Validasi migrasi (setara Task 4 rencana migrasi):** dibandingkan offset topik Kafka (`kafka-get-offsets.bat`, total across 3 partisi) dengan pertambahan dokumen di MongoDB pada window ~2 menit — pesan yang diproduksi `ingest.py` bertambah konsisten (append-only, tidak ada gap), tidak ditemukan indikasi pesan hilang di level broker maupun duplikasi pemrosesan di `live_states` (upsert-by-`icao24` tetap konsisten).
 
 ## 4. Justifikasi Pemilihan Platform
 
@@ -65,7 +72,7 @@ SERVING & VISUALISASI
 | Batch | **Spark (PySpark)** | In-memory, jauh lebih cepat dari MapReduce, API DataFrame ekspresif |
 | Streaming | **Spark Structured Streaming** | Satu engine dengan batch, exactly-once via checkpoint+WAL |
 | Resource manager Spark | **`local[*]`** (bukan YARN) | Migrasi ke YARN **dicoba dan dibatalkan** — bug classpath-jar di Hadoop 3.3.6-on-Windows (`{{PWD}}`/`<CPS>` tidak ter-expand), dikonfirmasi 5 percobaan independen. YARN tetap dipakai lewat **MapReduce native** untuk job pembanding `density_grid_hourly`, membuktikan YARN sendiri sehat — hanya jalur classpath-builder Spark yang bermasalah |
-| Transport streaming | **File source** (bukan Kafka) | Cukup untuk prototipe single-node dan tetap fault-tolerant; Kafka disebut sebagai jalur produksi |
+| Transport streaming | **Kafka** (native Windows, KRaft) | Awalnya file source lokal (cukup untuk prototipe berdiri sendiri), dimigrasikan ke Kafka 2026-07-12 untuk buffering & replay saat consumer sempat berhenti — lihat §3.1 |
 | Serving API | **FastAPI** | Async native untuk WebSocket + MongoDB change stream |
 | Dashboard | **React (Vite) + deck.gl/MapLibre** | Update realtime via WebSocket push tanpa refresh; deck.gl efisien merender ratusan marker bergerak |
 
@@ -73,7 +80,7 @@ SERVING & VISUALISASI
 
 ### 5.1 Jalur Streaming (M1)
 
-Streaming job berjalan sehat, query `RUNNING`, terus memproses micro-batch dari `landing_stream/` ke MongoDB.
+Streaming job berjalan sehat, ketiga query (`live_states`, `zone_stats`, `alerts`) `RUNNING`, terus memproses micro-batch dari Kafka topic `opensky.states` ke MongoDB.
 
 ![Spark UI - Structured Streaming](screenshots/spark-ui-streaming.png)
 
@@ -125,15 +132,15 @@ Tiga eksperimen chaos dijalankan sungguhan (bukan tabletop) di lab, blast radius
 
 ### Temuan sampingan (dilaporkan secara jujur, di luar scope 3 eksperimen terencana)
 
-- Satu query Structured Streaming (dugaan `zone_stats`/`alerts`) kadang menunjukkan status `FAILED` (`py4j.Py4JException`), independen dari chaos experiment manapun — belum diinvestigasi tuntas.
 - `ingest.py` sempat berhenti menulis file baru ke `landing_stream/` selama ~26 menit tanpa exception apa pun di log, lalu pulih sendiri tanpa intervensi — kemungkinan hang diam-diam di panggilan HTTP/OAuth, belum dikonfirmasi root cause-nya.
+- **Duplikasi dokumen `alerts` (density_spike):** ditemukan saat validasi migrasi Kafka (§3.1) — koleksi `alerts` bisa berisi beberapa dokumen dengan `(type, icao24, zone, ts)` identik. Akar masalah: Query 2 (`zone_stats`) pakai `outputMode("update")`, jadi selama window 2 menit masih terbuka, agregat zona yang sama ter-emit ulang tiap trigger (10 detik) — `zone_stats` sendiri aman (upsert by `{zone}_{window_start}`), tapi insert alert `density_spike` di batch yang sama memakai `insert_many` tanpa dedup key, jadi kondisi spike yang tetap `True` di beberapa trigger berturut-turut menghasilkan alert duplikat. Bug ini independen dari transport (Kafka maupun file source lama sama-sama kena), lebih kentara saat polling dipercepat (lebih banyak trigger per window terbuka). Perbaikan yang disarankan: upsert alert `density_spike` dengan key `{type}_{zone}_{window_start}`, sama seperti pola `zone_stats` — belum diimplementasikan.
 
 ## 7. Keterbatasan & Desain Produksi
 
 | Aspek | Prototipe | Produksi |
 |---|---|---|
 | Akuisisi | Polling REST, kuota 4.000 kredit/hari | Feed ADS-B langsung / lisensi komersial, receiver sendiri |
-| Transport streaming | Folder file lokal | **Kafka** (buffering, replay, multi-consumer, backpressure) |
+| Transport streaming | **Kafka** single broker, replication-factor 1 | Kafka cluster multi-broker, replication-factor ≥3 (toleran kehilangan broker) |
 | Cluster | Single-node, Spark `local[*]`, replikasi HDFS 1 | Multi-node YARN/Kubernetes, replikasi ≥3, HA NameNode/ResourceManager |
 | Orkestrasi | Windows Task Scheduler / skrip | Airflow (dependensi, retry, SLA, backfill) |
 | Keamanan | Kredensial di config lokal | Kerberos/Ranger, TLS, secret manager |
@@ -159,6 +166,7 @@ Tiga eksperimen chaos dijalankan sungguhan (bukan tabletop) di lab, blast radius
 ## Lampiran — Dokumen Pendukung
 
 - `docs/design/2026-07-08-desain-infrastruktur-bigdata-lalu-lintas-udara.md` — dokumen desain arsitektur lengkap
+- `docs/design/2026-07-12-kafka-migration-design.md` & `docs/plans/2026-07-12-kafka-migration.md` — desain & rencana migrasi transport streaming ke Kafka (§3.1)
 - `docs/design/hasil-eksperimen-resiliensi.md` — log lengkap 3 eksperimen chaos (angka mentah, output terminal)
 - `docs/design/slide-outline.md` — outline slide presentasi
 - `docs/plans/2026-07-08-rencana-implementasi-opensky-pipeline.md` — rencana implementasi & checklist milestone

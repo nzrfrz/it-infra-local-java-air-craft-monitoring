@@ -3,6 +3,7 @@ already-have/
 task.txt
 .claude/
 QNA.md
+what-have-done.md
 
 # Secrets & local config
 config/config.yaml
