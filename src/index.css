@@ -22,8 +22,11 @@
 }
 
 @keyframes radar-spin {
+  from {
+    rotate: 0deg;
+  }
   to {
-    transform: translate(-50%, -50%) rotate(360deg);
+    rotate: 360deg;
   }
 }
 
@@ -68,5 +71,12 @@ body {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+
+  /* Sapuan radar tetap berputar walau OS minta reduce-motion - ini elemen
+     signature UI, bukan animasi dekoratif yang perlu tunduk ke preferensi itu. */
+  .animate-radar-spin {
+    animation-duration: 4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
