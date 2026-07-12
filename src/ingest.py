@@ -6,6 +6,8 @@ Usage: python src/ingest.py [--config config/config.yaml] [--once]
 import argparse
 import json
 import logging
+import os
+import random
 import sys
 import tempfile
 import time
@@ -60,7 +62,14 @@ def credits_for_bbox(bbox):
 
 
 def fetch_states(cfg, tier, max_retries=3):
-    """GET /states/all dengan bbox tier; retry exponential backoff (2/4/8s)."""
+    """GET /states/all dengan bbox tier; retry exponential backoff (2/4/8s).
+
+    Chaos hooks (env var, default mati - lihat docs/plans/2026-07-12-m4-validasi-resiliensi.md
+    Eksperimen 2): CHAOS_LATENCY_S menyisipkan sleep sebelum tiap request,
+    CHAOS_ERROR_RATE melempar error simulasi dengan probabilitas tsb sebelum
+    request sungguhan dikirim, supaya retry/backoff asli di bawah ini teruji."""
+    chaos_latency = float(os.environ.get("CHAOS_LATENCY_S", "0"))
+    chaos_error_rate = float(os.environ.get("CHAOS_ERROR_RATE", "0"))
     bbox = cfg["opensky"]["tiers"][tier]
     params = {
         "lamin": bbox["lamin"],
@@ -71,6 +80,10 @@ def fetch_states(cfg, tier, max_retries=3):
     last_err = None
     for attempt in range(max_retries):
         try:
+            if chaos_latency > 0:
+                time.sleep(chaos_latency)
+            if chaos_error_rate > 0 and random.random() < chaos_error_rate:
+                raise RuntimeError("chaos: simulated ingest error (CHAOS_ERROR_RATE)")
             token = get_token(cfg)
             resp = requests.get(
                 cfg["opensky"]["api_url"],
