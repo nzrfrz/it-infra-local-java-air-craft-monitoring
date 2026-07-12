@@ -1,0 +1,4 @@
+﻿live_states: 1337
+zone_stats: 5394
+alerts: 66
+daily_snapshot: 4

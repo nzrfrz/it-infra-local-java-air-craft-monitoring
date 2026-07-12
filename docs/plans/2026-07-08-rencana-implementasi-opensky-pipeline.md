@@ -230,19 +230,19 @@ WS  /ws/live                               → pesan JSON: {"channel":"live_stat
 
 ### M1 — Jalur streaming end-to-end (A + B)
 
-- [ ] Jalankan `start_infra.ps1` → `ingest.py` → `streaming_job.py` dengan **data riil** minimal 30 menit
-- [ ] Verifikasi: file landing bertambah tiap 60 dtk; `live_states` terisi & ter-update; Spark UI tab Streaming sehat (batch duration < trigger interval); tidak ada kredit API terbuang (cek log)
-- [ ] Biarkan ingest jalan terus (idealnya 1–3 hari) untuk menimbun data raw buat batch & demo
+- [x] Jalankan `start_infra.ps1` → `ingest.py` → `streaming_job.py` dengan **data riil** minimal 30 menit
+- [x] Verifikasi: file landing bertambah tiap 60 dtk; `live_states` terisi & ter-update; Spark UI tab Streaming sehat (batch duration < trigger interval); tidak ada kredit API terbuang (cek log)
+- [x] Biarkan ingest jalan terus (idealnya 1–3 hari) untuk menimbun data raw buat batch & demo
 
 ### M2 — Jalur serving end-to-end (C + D di atas M1)
 
-- [ ] Start FastAPI + `npm run dev` → peta menampilkan **pesawat riil di atas Jawa bergerak tanpa refresh**
+- [x] Start FastAPI + `npm run dev` → peta menampilkan **pesawat riil di atas Jawa bergerak tanpa refresh**
 - [ ] Uji alert: jalankan `replay.py` atas rekaman yang di-edit menyisipkan squawk 7700 → toast muncul di dashboard
 
 ### M3 — Jalur batch (B di atas data M1)
 
-- [ ] `batch_job.py --date <kemarin>` atas data riil → panel historis dashboard terisi (chart per jam, heatmap, kartu ringkasan)
-- [ ] Cek angka masuk akal: bandingkan total record dengan hitungan `hdfs dfs -cat ... | wc -l` sampel
+- [x] `batch_job.py --date <kemarin>` atas data riil → panel historis dashboard terisi (chart per jam, heatmap, kartu ringkasan)
+- [x] Cek angka masuk akal: bandingkan total record dengan hitungan `hdfs dfs -cat ... | wc -l` sampel
 
 ### M4 — Validasi resiliensi + persiapan presentasi
 
