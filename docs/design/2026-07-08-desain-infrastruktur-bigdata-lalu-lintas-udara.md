@@ -185,6 +185,18 @@ Validasi lewat 3 eksperimen chaos (dijalankan di lab, blast radius = 0 pengguna 
 
 Hasil tiap eksperimen dicatat: hipotesis terbukti/terbantah, waktu pemulihan, tindak lanjut.
 
+### Hasil Validasi (dieksekusi 2026-07-12, lihat `docs/design/hasil-eksperimen-resiliensi.md` untuk detail penuh + MTTR)
+
+Ketiga eksperimen chaos dijalankan sungguhan (bukan tabletop) di mesin lab ini. Ringkasan:
+
+1. **Kill DataNode saat batch** — hipotesis TERBUKTI. `batch_job.py` gagal total (`SparkException: Job aborted`, `No live nodes contain block`) begitu satu-satunya DataNode (replikasi 1) mati; MTTR pemulihan teknis ~20 detik; setelah restart, re-run batch sukses total (exit code 0, 2287 baris bersih, 389 pesawat unik).
+2. **Latensi/error di ingest** (sleep 5 dtk + 20% error rate, ~6 menit) — hipotesis TERBUKTI. Structured Streaming tetap `RUNNING` sepanjang injeksi; `live_states` naik wajar (1358→1418), tidak ada indikasi data hilang; retry+backoff bawaan (`fetch_states`, 2/4/8 detik) cukup menyerap error rate transient sampai 20%.
+3. **Kill proses streaming** (`taskkill` `SparkSubmit`, `local[*]`) — hipotesis TERBUKTI. Setelah restart, ketiga query Structured Streaming melanjutkan Query ID yang sama (bukan membuat query baru) dan Latest Batch lanjut dari checkpoint (689/853/853 → 691/854/854), tanpa duplikat di `live_states` (distinct `_id` == total dokumen, berkat upsert-by-`icao24`); MTTR teknis ~3 menit 39 detik.
+
+Dua temuan sampingan turut dilaporkan secara jujur (bukan disembunyikan dari laporan, karena punya nilai edukasi soal resiliensi yang tidak tercakup 3 eksperimen terencana): satu query Structured Streaming (`zone_stats`/`alerts`, dugaan) sempat `FAILED` secara independen dari chaos experiment manapun; dan `ingest.py` sempat hang diam-diam ~26 menit tanpa exception sebelum pulih sendiri saat Eksperimen 3 berlangsung — keduanya belum diinvestigasi tuntas, dicatat sebagai item lanjutan di luar scope M4.
+
+Screenshot pendukung: `reports/screenshots/`.
+
 ## 7. Prototipe Implementasi
 
 Struktur repo:

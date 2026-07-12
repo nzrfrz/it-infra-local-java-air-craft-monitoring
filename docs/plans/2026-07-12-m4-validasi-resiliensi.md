@@ -475,7 +475,7 @@ git commit -m "docs: add presentation slide outline for M4 wrap-up"
 - Modify: `docs/design/2026-07-08-desain-infrastruktur-bigdata-lalu-lintas-udara.md` (§6, tambahkan ringkasan hasil eksperimen + link ke `hasil-eksperimen-resiliensi.md` dan screenshot)
 - Modify: `docs/plans/2026-07-08-rencana-implementasi-opensky-pipeline.md:249-253` (centang checkbox M4)
 
-- [ ] **Step 1: Tambah subsection "Hasil Validasi" di §6 dokumen desain, setelah tabel eksperimen (baris 186)**
+- [x] **Step 1: Tambah subsection "Hasil Validasi" di §6 dokumen desain, setelah tabel eksperimen (baris 186)**
 
 ```markdown
 ### Hasil Validasi (dieksekusi 2026-07-12+, lihat `docs/design/hasil-eksperimen-resiliensi.md` untuk detail penuh + MTTR)
@@ -489,7 +489,7 @@ Ketiga eksperimen chaos dijalankan sungguhan (bukan tabletop) di mesin lab ini. 
 Screenshot pendukung: `reports/screenshots/`.
 ```
 
-- [ ] **Step 2: Centang checkbox M4 di master plan**
+- [x] **Step 2: Centang checkbox M4 di master plan**
 
 Ganti semua `- [ ]` di baris 249-253 jadi `- [x]`.
 

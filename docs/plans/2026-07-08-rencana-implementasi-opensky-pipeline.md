@@ -246,11 +246,11 @@ WS  /ws/live                               → pesan JSON: {"channel":"live_stat
 
 ### M4 — Validasi resiliensi + persiapan presentasi
 
-- [ ] Jalankan 3 eksperimen chaos (§6 desain): kill DataNode saat batch; inject latensi/error di ingest; kill executor saat streaming. Catat hasil (hipotesis terbukti?, MTTR) di `docs/design/hasil-eksperimen-resiliensi.md`
-- [ ] `scripts/demo.ps1` — start semuanya berurutan untuk hari-H; latihan demo 15 menit sesuai §7 desain
-- [ ] Screenshot untuk laporan: Spark UI (streaming + DAG batch), `hdfs dfs -ls`, mongosh, dashboard (peta live, historis, alert)
-- [ ] Slide presentasi: masalah → arsitektur (diagram §3) → justifikasi platform (§5) → demo live → hasil chaos → keterbatasan & jalur produksi (§8)
-- [ ] Finalisasi dokumen desain sebagai laporan (tambah screenshot + hasil eksperimen)
+- [x] Jalankan 3 eksperimen chaos (§6 desain): kill DataNode saat batch; inject latensi/error di ingest; kill executor saat streaming. Catat hasil (hipotesis terbukti?, MTTR) di `docs/design/hasil-eksperimen-resiliensi.md`
+- [x] `scripts/demo.ps1` — start semuanya berurutan untuk hari-H; latihan demo 15 menit sesuai §7 desain
+- [x] Screenshot untuk laporan: Spark UI (streaming + DAG batch), `hdfs dfs -ls`, mongosh, dashboard (peta live, historis, alert)
+- [x] Slide presentasi: masalah → arsitektur (diagram §3) → justifikasi platform (§5) → demo live → hasil chaos → keterbatasan & jalur produksi (§8)
+- [x] Finalisasi dokumen desain sebagai laporan (tambah screenshot + hasil eksperimen)
 
 ---
 
