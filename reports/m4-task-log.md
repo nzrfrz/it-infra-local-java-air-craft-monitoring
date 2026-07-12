@@ -28,3 +28,12 @@ Catatan hasil eksekusi tiap task M4 (angka, temuan, commit) — untuk cara/prose
 - Recovery diverifikasi: `Live datanodes (1)`, `fsck` -> `Status: HEALTHY`, `0 missing blocks`.
 - Re-run batch job -> exit code 0, 2287 baris bersih, 389 pesawat unik — pulih total.
 - Hasil lengkap (termasuk MTTR dan catatan tooling Windows) dicatat di `docs/design/hasil-eksperimen-resiliensi.md`.
+
+## 2026-07-12 — Task 3: Eksperimen 2 (latensi/error ingest) — selesai, dipraktikkan manual oleh user
+
+- Baseline `live_states`: 1358 (11:35:20).
+- `ingest.py` dijalankan ~6 menit dengan `CHAOS_LATENCY_S=5` + `CHAOS_ERROR_RATE=0.2` — 1 chaos error kena (tier national), retry backoff 2s langsung sukses.
+- Spark UI Structured Streaming tetap 2 query `RUNNING` sehat selama & setelah injeksi (`reports/screenshots/chaos2-streaming-survived.png`).
+- `live_states` setelah injeksi: 1418 (naik wajar, tidak ada data hilang).
+- Temuan sampingan (bukan akibat eksperimen ini): 1 query `FAILED` (`py4j.Py4JException`) — signature sama dengan yang terlihat sejak Task 0, bug pra-eksisting tidak terkait chaos injeksi, perlu diselidiki terpisah.
+- Hasil lengkap di `docs/design/hasil-eksperimen-resiliensi.md`.

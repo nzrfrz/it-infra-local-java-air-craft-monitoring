@@ -265,7 +265,7 @@ git commit -m "docs: record chaos experiment 1 result (kill DataNode during batc
 
 **Hipotesis (dari desain §6):** streaming lanjut jalan, latensi naik gracefully, tidak ada record hilang setelah pulih.
 
-- [ ] **Step 1: Baseline row count sebelum injeksi**
+- [x] **Step 1: Baseline row count sebelum injeksi**
 
 ```powershell
 $py = "D:\Coding\#bigdata\venv\Scripts\python.exe"
@@ -274,7 +274,7 @@ $py = "D:\Coding\#bigdata\venv\Scripts\python.exe"
 
 Catat angka & waktu.
 
-- [ ] **Step 2: Stop window "Ingest" yang jalan (dari `run_backend`), restart dengan chaos env var, biarkan 5 menit**
+- [x] **Step 2: Stop window "Ingest" yang jalan (dari `run_backend`), restart dengan chaos env var, biarkan 5 menit**
 
 Tutup window PowerShell/cmd berjudul "Ingest" (dari `run_backend.cmd`), lalu jalankan foreground supaya log kelihatan langsung:
 
@@ -287,7 +287,7 @@ $env:CHAOS_ERROR_RATE = "0.2"
 
 Biarkan jalan ~5 menit (Ctrl+C untuk stop), amati log: sebagian poll menunjukkan `WARNING ... chaos: simulated ingest error` diikuti retry, tapi mayoritas akhirnya sukses (`tier=java pesawat=N ...`) karena peluang gagal 3x berturut-turut hanya 0.2³=0.8%.
 
-- [ ] **Step 3: Rollback env var, restart ingest normal**
+- [x] **Step 3: Rollback env var, restart ingest normal**
 
 ```powershell
 Remove-Item Env:\CHAOS_LATENCY_S
@@ -296,11 +296,13 @@ Remove-Item Env:\CHAOS_ERROR_RATE
 
 Jalankan lagi window "Ingest" normal (tanpa env var) — bisa lewat `run_backend.cmd` ulang atau manual `python src\ingest.py` di window baru.
 
-- [ ] **Step 4: Verifikasi Spark UI Structured Streaming tidak error selama periode injeksi**
+- [x] **Step 4: Verifikasi Spark UI Structured Streaming tidak error selama periode injeksi**
 
 Buka `http://localhost:4040` (atau port yang tertera di log `streaming_job.py`) tab **Structured Streaming**. Expected: query tetap `RUNNING` sepanjang periode injeksi, `numInputRows` tetap >0 (mungkin sedikit lebih jarang karena beberapa poll gagal & tidak menghasilkan file baru — ini normal, bukan bug, sesuai desain §6 "kalau OpenSky down, tidak ada file baru = tidak ada micro-batch, bukan error").
 
-- [ ] **Step 5: Verifikasi tidak ada record hilang setelah pulih**
+**Hasil aktual:** 2 query `RUNNING` sehat sepanjang & setelah injeksi (screenshot `reports/screenshots/chaos2-streaming-survived.png`). Ada 1 query `FAILED` terpisah tapi signature error-nya sudah ada sejak Task 0 — bukan akibat eksperimen ini.
+
+- [x] **Step 5: Verifikasi tidak ada record hilang setelah pulih**
 
 ```powershell
 & $py -c "from pymongo import MongoClient; c = MongoClient('mongodb://localhost:27017/?replicaSet=rs0&directConnection=true'); print('live_states:', c.opensky.live_states.count_documents({}))"
@@ -308,7 +310,9 @@ Buka `http://localhost:4040` (atau port yang tertera di log `streaming_job.py`) 
 
 Bandingkan dengan Step 1 — expected: angka naik wajar (bukan turun/stuck), konsisten dengan trafik pesawat berjalan normal.
 
-- [ ] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`** (append di bawah Eksperimen 1)
+**Hasil aktual:** 1358 -> 1418, naik wajar.
+
+- [x] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`** (append di bawah Eksperimen 1)
 
 ```markdown
 ## Eksperimen 2 — Sumber data lambat/error (inject sleep 5s + 20% error rate di ingestor)
