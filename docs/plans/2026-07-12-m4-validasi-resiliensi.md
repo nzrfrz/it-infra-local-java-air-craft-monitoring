@@ -183,7 +183,7 @@ git commit -m "feat: add env-gated chaos hooks (CHAOS_LATENCY_S, CHAOS_ERROR_RAT
 **Files:**
 - Create: `docs/design/hasil-eksperimen-resiliensi.md` (dibuat di task ini, diisi lebih lanjut di Task 3 & 4)
 
-- [ ] **Step 1: Catat baseline & cari PID DataNode**
+- [x] **Step 1: Catat baseline & cari PID DataNode**
 
 ```powershell
 & "$env:HADOOP_HOME\bin\hdfs.cmd" dfsadmin -report | Select-String "Live datanodes|Under replicated"
@@ -192,7 +192,7 @@ jps
 
 Expected: `Live datanodes (1)`; `jps` menampilkan baris `<PID> DataNode`. Catat PID-nya dan waktu saat ini (`Get-Date`).
 
-- [ ] **Step 2: Kill DataNode, lalu SEGERA jalankan batch job**
+- [x] **Step 2: Kill DataNode, lalu SEGERA jalankan batch job**
 
 ```powershell
 taskkill /PID <PID_DATANODE> /F
@@ -202,13 +202,17 @@ scripts\run_batch_daily.ps1 -Date $today
 
 Expected (hipotesis): perintah kedua gagal — exit code non-zero, exception seperti `org.apache.hadoop.ipc.RemoteException` / `Could not obtain block` di output `spark-submit`. Simpan output lengkap (copy-paste ke `docs/design/hasil-eksperimen-resiliensi.md`) dan screenshot terminal-nya ke `reports/screenshots/chaos1-batch-fail.png` — ini bukti visual paling penting dari eksperimen ini (kegagalan aktual, bukan cuma catatan).
 
-- [ ] **Step 3: Rollback — restart DataNode**
+**Hasil aktual:** terbukti — job abort dengan `SparkException: Job aborted due to stage failure`, root cause `Connection refused` ke port DataNode 9866 + `No live nodes contain block`. Output lengkap ditempel ke `docs/design/hasil-eksperimen-resiliensi.md` (bukan screenshot PNG — teks terminal ditempel langsung, dianggap cukup untuk kasus ini).
+
+- [x] **Step 3: Rollback — restart DataNode**
 
 ```powershell
 & "$env:HADOOP_HOME\bin\hdfs.cmd" --daemon start datanode
 ```
 
-- [ ] **Step 4: Verifikasi pulih & catat MTTR**
+**Deviasi ditemukan:** `--daemon` **tidak didukung** oleh `hdfs.cmd` di Windows (`Unrecognized option: --daemon`, fatal exit) — itu fitur `hadoop-functions.sh` (shell Linux) yang tidak ada padanannya di build Windows, dan tidak ada `hadoop-daemon.cmd` di `sbin/` (hanya versi `.sh`). Cara yang benar dipraktikkan: jalankan `hdfs.cmd datanode` langsung (foreground) di window PowerShell terpisah, sama seperti pola window "Ingest"/"Streaming Job" di `run_backend.ps1`. **`docs/design/panduan-manual-m4.md` masih menyebut `--daemon` — perlu diperbarui di sesi berikutnya.**
+
+- [x] **Step 4: Verifikasi pulih & catat MTTR**
 
 ```powershell
 $maxWait = 60; $waited = 0
@@ -223,7 +227,9 @@ Write-Output "DataNode kembali live setelah ~${waited}s"
 
 Expected: `Status: HEALTHY`, `0 missing blocks`. MTTR = waktu dari Step 2 (kill) sampai DataNode live lagi di Step 4.
 
-- [ ] **Step 5: Re-run batch job untuk buktikan pulih total**
+**Hasil aktual:** `Live datanodes (1)`, `Status: HEALTHY`, `0 missing blocks`. MTTR teknis murni ~20 detik (dari perintah restart yang benar sampai sehat); total insiden-ke-terverifikasi ~8 menit karena percobaan `--daemon` yang gagal duluan (lihat deviasi Step 3).
+
+- [x] **Step 5: Re-run batch job untuk buktikan pulih total**
 
 ```powershell
 scripts\run_batch_daily.ps1 -Date $today
@@ -231,7 +237,9 @@ scripts\run_batch_daily.ps1 -Date $today
 
 Expected: exit code 0 (sebelumnya gagal di Step 2, sekarang sukses setelah DataNode pulih).
 
-- [ ] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`**
+**Hasil aktual:** exit code 0, 2287 baris bersih, 389 pesawat unik, jam tersibuk 09 — pulih total.
+
+- [x] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`**
 
 ```markdown
 # Hasil Eksperimen Resiliensi

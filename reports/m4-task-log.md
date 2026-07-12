@@ -20,7 +20,11 @@ Catatan hasil eksekusi tiap task M4 (angka, temuan, commit) — untuk cara/prose
 - Verifikasi aktif: `CHAOS_ERROR_RATE=1.0` membuat tiap tier gagal 3x berturut-turut dengan retry backoff asli 2s/4s/8s, lalu `poll_once(...) gagal` — hook menembus jalur retry yang sudah ada.
 - Commit: `it-infra` `561d3f6`.
 
-## 2026-07-12 — Task 2: Eksperimen 1 (kill DataNode) — sedang berjalan
+## 2026-07-12 — Task 2: Eksperimen 1 (kill DataNode) — selesai, dipraktikkan manual oleh user
 
 - Baseline: `Live datanodes (1)`, `Under replicated blocks: 0`, PID DataNode = 18072.
-- (diisi lebih lanjut setelah eksperimen selesai)
+- Kill (`taskkill /PID 18072 /F`) + langsung jalankan batch -> **gagal total**, `SparkException: Job aborted due to stage failure` (Connection refused ke DataNode, block tidak terbaca).
+- Rollback: `hdfs.cmd --daemon start datanode` **tidak jalan di Windows** (`Unrecognized option: --daemon`) — dialihkan ke `hdfs.cmd datanode` langsung di window terpisah, berhasil.
+- Recovery diverifikasi: `Live datanodes (1)`, `fsck` -> `Status: HEALTHY`, `0 missing blocks`.
+- Re-run batch job -> exit code 0, 2287 baris bersih, 389 pesawat unik — pulih total.
+- Hasil lengkap (termasuk MTTR dan catatan tooling Windows) dicatat di `docs/design/hasil-eksperimen-resiliensi.md`.

@@ -59,9 +59,9 @@ Remove-Item Env:\CHAOS_ERROR_RATE, Env:\CHAOS_LATENCY_S   # WAJIB dibersihkan se
    scripts\run_batch_daily.ps1 -Date (Get-Date).ToString("yyyy-MM-dd")
    ```
    Perhatikan exit code dan pesan error di output.
-3. **Rollback — restart DataNode:**
+3. **Rollback — restart DataNode.** `--daemon` TIDAK didukung oleh `hdfs.cmd` di Windows (`Unrecognized option: --daemon`, fatal exit — itu fitur shell script Linux, tidak ada padanan `.cmd`-nya). Jalankan langsung di window terpisah:
    ```powershell
-   & "$env:HADOOP_HOME\bin\hdfs.cmd" --daemon start datanode
+   Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$Host.UI.RawUI.WindowTitle = 'DataNode'; & `"$env:HADOOP_HOME\bin\hdfs.cmd`" datanode"
    ```
 4. Tunggu sampai live lagi, lalu cek kesehatan:
    ```powershell
