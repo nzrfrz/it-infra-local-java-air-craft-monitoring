@@ -50,9 +50,14 @@ Arsitektur mengikuti **pola Lambda**: *batch layer* untuk akurasi & analisis men
 │  OpenSky API ──► ingest.py (poller 2-tier: Jawa/60dtk, ID/15mnt)    │
 │                        │                                            │
 │                        ├──► HDFS /data/raw/opensky/{dt}/*.json      │
-│                        └──► landing_stream/ (file JSON kecil per    │
-│                             snapshot utk dikonsumsi streaming)      │
-│  (replay.py = fallback memutar ulang rekaman ke landing_stream/)    │
+│                        └──► Kafka topic opensky.states (1 broker    │
+│                             KRaft, 3 partisi, key=icao24) — dikon-  │
+│                             sumsi streaming. Sebelum 2026-07-12,    │
+│                             ini folder lokal landing_stream/, lihat │
+│                             docs/design/2026-07-12-kafka-migration- │
+│                             design.md                               │
+│  (replay.py = fallback memutar ulang rekaman, saat ini masih ke     │
+│  landing_stream/ lama — belum dimigrasikan ke Kafka, follow-up)     │
 ├─────────────────────────────────────────────────────────────────────┤
 │ PENYIMPANAN                                                         │
 │  HDFS  = data lake (raw zone + curated zone, format Parquet)        │
@@ -66,7 +71,8 @@ Arsitektur mengikuti **pola Lambda**: *batch layer* untuk akurasi & analisis men
 │           prefix callsign → Parquet di HDFS curated                 │
 │           + snapshot ringkasan harian ke MongoDB                    │
 │  STREAM : streaming_job.py (Spark Structured Streaming)             │
-│           file source (landing_stream/) → parsing → windowed agg    │
+│           Kafka source (topic opensky.states) → parsing → windowed  │
+│           agg                                                       │
 │           (jumlah pesawat & rata2 kecepatan per zona per window     │
 │           2 mnt, watermark 1 mnt) → deteksi alert:                  │
 │           • squawk darurat 7500/7600/7700                           │
@@ -205,10 +211,10 @@ Struktur repo:
 it-infra/
 ├── docs/design/           ← dokumen ini + diagram
 ├── src/
-│   ├── ingest.py          # poller OpenSky 2-tier → HDFS & landing_stream/
-│   ├── replay.py          # putar ulang rekaman (fallback demo offline)
+│   ├── ingest.py          # poller OpenSky 2-tier → HDFS raw & Kafka topic opensky.states
+│   ├── replay.py          # putar ulang rekaman (fallback demo offline, masih landing_stream/)
 │   ├── batch_job.py       # PySpark: raw → curated Parquet + snapshot MongoDB
-│   └── streaming_job.py   # Structured Streaming: landing → windowed agg + alert → MongoDB
+│   └── streaming_job.py   # Structured Streaming: Kafka source → windowed agg + alert → MongoDB
 ├── api/                   # FastAPI: WebSocket (change stream) + REST historis
 │   └── main.py
 ├── web/                   # React SPA (Vite + deck.gl/MapLibre)

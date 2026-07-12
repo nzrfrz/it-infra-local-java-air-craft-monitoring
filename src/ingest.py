@@ -1,5 +1,6 @@
-"""Poller OpenSky 2-tier -> HDFS raw zone (arsip) + landing_stream/ (NDJSON,
-dikonsumsi Structured Streaming) + recordings/ (arsip lokal untuk replay.py).
+"""Poller OpenSky 2-tier -> HDFS raw zone (arsip) + Kafka topic opensky.states
+(dikonsumsi Structured Streaming, lihat docs/design/2026-07-12-kafka-migration-design.md)
++ recordings/ (arsip lokal untuk replay.py).
 
 Usage: python src/ingest.py [--config config/config.yaml] [--once]
 """
@@ -16,6 +17,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from kafka import KafkaProducer
+from kafka.errors import KafkaError
 
 # Endpoint WebHDFS (bukan HDFS native client) -- lihat _put_to_hdfs() di bawah
 # untuk alasannya (bug hdfs.cmd di Windows dengan path yang mengandung '=').
@@ -157,9 +160,27 @@ def _put_to_hdfs(local_path: Path, hdfs_dir: str):
     resp2.raise_for_status()
 
 
-def write_outputs(raw, flat_rows, tier, cfg, ts):
-    """(1) raw JSON -> HDFS raw/dt=YYYY-MM-DD/; (2) NDJSON -> landing_stream/
-    (tmp+rename); (3) salinan NDJSON -> recordings/."""
+def _send_to_kafka(producer, topic, flat_rows):
+    """Publish tiap baris (1 pesawat) sebagai 1 pesan Kafka -- menggantikan
+    tulis ke landing_stream/ (lihat docs/design/2026-07-12-kafka-migration-design.md).
+    Key = icao24, supaya semua event pesawat yang sama selalu ke partition yang
+    sama (ordering per-pesawat terjaga). acks="1" (bukan "all") karena
+    replication-factor topic ini cuma 1 -- tidak ada replica lain untuk di-ack."""
+    for row in flat_rows:
+        producer.send(
+            topic,
+            key=row["icao24"].encode("utf-8"),
+            value=json.dumps(row).encode("utf-8"),
+        )
+    # flush blocking sampai semua pesan micro-batch ini terkirim/gagal --
+    # supaya kegagalan kirim ketahuan di sini (di-log oleh pemanggil), bukan
+    # diam-diam hilang di background callback.
+    producer.flush(timeout=10)
+
+
+def write_outputs(raw, flat_rows, tier, cfg, ts, producer):
+    """(1) raw JSON -> HDFS raw/dt=YYYY-MM-DD/; (2) tiap baris -> Kafka topic
+    (dikonsumsi streaming_job.py); (3) salinan NDJSON -> recordings/."""
     dt_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
     ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     filename = f"states_{tier}_{ts_str}.json"
@@ -175,14 +196,17 @@ def write_outputs(raw, flat_rows, tier, cfg, ts):
             _put_to_hdfs(raw_path, hdfs_dir)
         except Exception as exc:  # noqa: BLE001
             # Gagal tulis ke HDFS TIDAK menghentikan proses ingest -- data tetap
-            # sempat ditulis ke landing_stream/recordings di bawah, jadi
-            # streaming tetap dapat data walau arsip HDFS-nya sempat bolong.
+            # sempat dikirim ke Kafka/recordings di bawah, jadi streaming tetap
+            # dapat data walau arsip HDFS-nya sempat bolong.
             log.error("gagal menulis raw ke HDFS: %s", exc)
 
-    # (2) Salinan sudah DI-FLATTEN (baris per pesawat) ke landing_stream/ --
-    # inilah folder yang dipantau streaming_job.py sebagai file source.
-    landing_dir = Path(cfg["paths"]["landing_stream"])
-    _write_ndjson_atomic(flat_rows, landing_dir, filename)
+    # (2) Publish baris yang sudah DI-FLATTEN (per pesawat) ke Kafka topic --
+    # ini yang dikonsumsi streaming_job.py sebagai source. Gagal kirim TIDAK
+    # menghentikan proses ingest (pola sama dengan gagal-HDFS di atas).
+    try:
+        _send_to_kafka(producer, cfg["kafka"]["topic"], flat_rows)
+    except KafkaError as exc:
+        log.error("gagal publish ke Kafka: %s", exc)
 
     # (3) Salinan yang sama juga disimpan ke recordings/ -- arsip lokal untuk
     # replay.py (demo offline kalau internet/kuota OpenSky bermasalah).
@@ -190,13 +214,13 @@ def write_outputs(raw, flat_rows, tier, cfg, ts):
     _write_ndjson_atomic(flat_rows, recordings_dir, filename)
 
 
-def poll_once(cfg, tier):
+def poll_once(cfg, tier, producer):
     """Satu siklus lengkap untuk satu tier: ambil data -> flatten -> tulis ke
-    3 tujuan (HDFS raw, landing_stream, recordings) -> hitung kredit terpakai."""
+    3 tujuan (HDFS raw, Kafka, recordings) -> hitung kredit terpakai."""
     now = time.time()
     raw = fetch_states(cfg, tier)
     flat_rows = flatten(raw, tier, fetched_at=int(now))
-    write_outputs(raw, flat_rows, tier, cfg, ts=int(now))
+    write_outputs(raw, flat_rows, tier, cfg, ts=int(now), producer=producer)
     credits = credits_for_bbox(cfg["opensky"]["tiers"][tier])
     log.info("tier=%s pesawat=%d kredit_dipakai=%d", tier, len(flat_rows), credits)
     return credits
@@ -217,6 +241,22 @@ def main():
     credits_today = 0
     credits_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    # Producer dibuat SEKALI di awal (bukan per-poll) -- KafkaProducer sudah
+    # thread-safe & connection-pooled secara internal, bikin ulang tiap poll
+    # cuma nambah overhead handshake ke broker tanpa manfaat.
+    #
+    # api_version dipaksa eksplisit (bukan auto-negotiate) supaya konsisten
+    # dengan versi broker yang diuji (Kafka 3.9.2 KRaft, lihat
+    # docs/design/2026-07-12-kafka-migration-design.md). acks=1 (int, BUKAN
+    # string "1" -- kafka-python meng-encode field ini langsung sebagai
+    # integer protokol, string gagal di-pack dengan error yang membingungkan
+    # "required argument is not an integer").
+    producer = KafkaProducer(
+        bootstrap_servers=cfg["kafka"]["bootstrap_servers"],
+        acks=1,
+        api_version=(2, 6, 0),
+    )
+
     log.info("ingest.py dimulai, tiers=%s", list(tiers.keys()))
 
     # Loop utama: tiap tier (mis. "java" tiap 60 dtk, "national" tiap 15 mnt)
@@ -233,7 +273,7 @@ def main():
         for tier, bbox in tiers.items():
             if now >= next_run[tier]:
                 try:
-                    credits_today += poll_once(cfg, tier)
+                    credits_today += poll_once(cfg, tier, producer)
                     log.info("kredit terpakai hari ini: %d/4000", credits_today)
                 except Exception as exc:  # noqa: BLE001
                     # Satu tier gagal (mis. fetch_states habis retry) tidak

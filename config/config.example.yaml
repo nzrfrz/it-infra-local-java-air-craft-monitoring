@@ -8,6 +8,9 @@ opensky:
     national: { lamin: -11.0, lamax: 6.0,  lomin: 95.0,  lomax: 141.0, interval_s: 900 }
 hdfs:
   base: "hdfs://localhost:9000/bigdata/opensky"
+kafka:
+  bootstrap_servers: "localhost:9092"
+  topic: "opensky.states"
 paths:
   landing_stream: "./landing-stream-recording/landing_stream"
   recordings: "./landing-stream-recording/recordings"

@@ -13,6 +13,12 @@
 # Yang TETAP TIDAK dijalankan otomatis:
 #   - src\replay.py      -> alternatif ingest.py offline (pakai rekaman), bukan dipakai bersamaan
 #   - web/ (frontend)    -> `npm run dev` di repo it-infra-web terpisah
+#
+# Kafka (2026-07-12): menggantikan landing_stream/ sebagai transport antara
+# ingest.py dan streaming_job.py -- lihat docs/design/2026-07-12-kafka-
+# migration-design.md. Broker WAJIB sudah diformat sekali (kafka-storage.bat
+# format, lihat docs/plans/2026-07-12-kafka-migration.md Task 1) sebelum
+# script ini pertama kali dipakai -- script ini cuma START broker, tidak format.
 
 param(
     [ValidateSet("cmd", "powershell")]
@@ -20,16 +26,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root   = Split-Path -Parent $PSScriptRoot
-$venv   = "D:\Coding\#bigdata\venv"
-$venvPy = Join-Path $venv "Scripts\python.exe"
+$root      = Split-Path -Parent $PSScriptRoot
+$venv      = "D:\Coding\#bigdata\venv"
+$venvPy    = Join-Path $venv "Scripts\python.exe"
+$kafkaHome = $env:KAFKA_HOME  # mis. C:\Kafka\kafka_2.13-3.9.2 -- lihat System Environment Variables
 
 if (-not (Test-Path $venvPy)) {
     Write-Error "Venv bersama tidak ditemukan di $venvPy. Cek lokasi venv #bigdata."
     exit 1
 }
+if (-not $kafkaHome -or -not (Test-Path $kafkaHome)) {
+    Write-Error "KAFKA_HOME tidak diset/tidak valid ($kafkaHome). Cek System Environment Variables."
+    exit 1
+}
 
-Write-Output "=== 1/4: HDFS + MongoDB ==="
+Write-Output "=== 1/6: HDFS + MongoDB ==="
 & (Join-Path $PSScriptRoot "start_infra.ps1")
 
 # Setiap komponen ditulis ke file launcher sungguhan (bukan satu baris "cmd /k a && b && c")
@@ -74,7 +85,14 @@ Set-Location '$root'
     }
 }
 
-Write-Output "`n=== 2/4: FastAPI (port 8000) [$Shell] ==="
+Write-Output "`n=== 2/6: Kafka broker (port 9092) [$Shell] ==="
+# Server-properties KRaft ada di dalam KAFKA_HOME, bukan repo ini -- broker
+# sudah harus diformat sekali sebelumnya (Task 1 kafka-migration plan).
+$kafkaProps = Join-Path $kafkaHome "config\kraft\server.properties"
+Start-Component -Title "Kafka Broker" -Exe (Join-Path $kafkaHome "bin\windows\kafka-server-start.bat") -Arguments "`"$kafkaProps`""
+Start-Sleep -Seconds 8  # beri waktu broker siap sebelum ingest.py/streaming_job.py coba connect
+
+Write-Output "`n=== 3/6: FastAPI (port 8000) [$Shell] ==="
 # TIDAK pakai --reload: di Windows, worker uvicorn --reload jalan di bawah
 # asyncio.SelectorEventLoop (bukan ProactorEventLoop), dan Selector loop
 # tidak bisa spawn subprocess sama sekali -> endpoint /api/history/refresh
@@ -83,13 +101,16 @@ Write-Output "`n=== 2/4: FastAPI (port 8000) [$Shell] ==="
 # edit api/main.py.
 Start-Component -Title "API - uvicorn" -Exe $venvPy -Arguments "-m uvicorn api.main:app --host 0.0.0.0 --port 8000"
 
-Write-Output "=== 3/4: ingest.py (poller OpenSky) [$Shell] ==="
+Write-Output "=== 4/6: ingest.py (poller OpenSky) [$Shell] ==="
 Start-Component -Title "Ingest" -Exe $venvPy -Arguments "src\ingest.py"
 
-Write-Output "=== 4/5: streaming_job.py (Spark Structured Streaming) [$Shell] ==="
-Start-Component -Title "Streaming Job" -Exe "spark-submit" -Arguments "src\streaming_job.py"
+Write-Output "=== 5/6: streaming_job.py (Spark Structured Streaming, Kafka source) [$Shell] ==="
+# --packages WAJIB -- connector Kafka bukan bagian default Spark, di-download
+# via Ivy (sekali, lalu ter-cache di ~/.ivy2). Tanpa ini: ClassNotFoundException
+# org.apache.spark.sql.kafka010.KafkaSourceProvider.
+Start-Component -Title "Streaming Job" -Exe "spark-submit" -Arguments "--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 src\streaming_job.py"
 
-Write-Output "=== 5/5: batch_job.py (agregasi harian, tanggal hari ini) ==="
+Write-Output "=== 6/6: batch_job.py (agregasi harian, tanggal hari ini) ==="
 $env:PATH = "$venv\Scripts;" + $env:PATH
 $env:PYSPARK_PYTHON = $venvPy
 $env:PYSPARK_DRIVER_PYTHON = $venvPy

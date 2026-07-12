@@ -10,15 +10,21 @@
 - Zona = grid 1°×1°, string `"{floor(lat)}_{floor(lon)}"` (contoh `-7_110`).
 - Timestamp semua epoch detik (int), UTC.
 
-## C1 — Format file landing (NDJSON)
+## C1 — Format pesan landing (Kafka topic `opensky.states`)
 
-Nama file: `states_{tier}_{YYYYmmddTHHMMSS}.json`, 1 baris JSON per pesawat:
+> **Update 2026-07-12**: transport landing berubah dari file NDJSON di folder lokal
+> `landing_stream/` menjadi **Kafka topic `opensky.states`** (1 broker KRaft mode, 3 partisi,
+> replication-factor 1) — lihat `docs/design/2026-07-12-kafka-migration-design.md`. **Format
+> payload per baris TIDAK berubah**, cuma medium transportnya. Key pesan Kafka = `icao24`
+> (`bytes`, encode UTF-8) supaya event 1 pesawat yang sama selalu ke partition yang sama.
+
+1 pesan Kafka = 1 pesawat, value (JSON, encode UTF-8):
 
 ```json
 {"icao24":"8a06f1","callsign":"GIA123","origin_country":"Indonesia","ts":1751970000,"lat":-6.12,"lon":106.65,"baro_altitude_m":3500.0,"velocity_ms":180.5,"true_track":270.1,"vertical_rate":-2.5,"on_ground":false,"squawk":"3421","tier":"java","fetched_at":1751970005}
 ```
 
-Field boleh `null` kecuali `icao24`, `ts`, `lat`, `lon`, `tier`. Raw HDFS menyimpan respons API asli (belum flatten); flatten dilakukan `common.flatten()` untuk landing.
+Field boleh `null` kecuali `icao24`, `ts`, `lat`, `lon`, `tier`. Raw HDFS menyimpan respons API asli (belum flatten); flatten dilakukan `common.flatten()` sebelum publish ke Kafka.
 
 ## C2 — Skema koleksi MongoDB
 

@@ -1,4 +1,8 @@
-"""Spark Structured Streaming: landing_stream/ (NDJSON) -> agregat & alert -> MongoDB.
+"""Spark Structured Streaming: Kafka topic opensky.states -> agregat & alert -> MongoDB.
+
+Sumber data sebelumnya folder lokal landing_stream/ (file JSON), sekarang Kafka
+(lihat docs/design/2026-07-12-kafka-migration-design.md) -- payload JSON per
+pesan tidak berubah, cuma medium transportnya.
 
 3 query independen (checkpoint terpisah):
   1. live_states  : upsert posisi terkini per pesawat (icao24)
@@ -9,7 +13,7 @@ Tulis via pymongo langsung di foreachBatch (bukan mongo-spark-connector) --
 volume prototipe kecil, driver.collect() per micro-batch cukup & menghindari
 kerumitan resolusi jar connector di Windows.
 
-Usage: python src/streaming_job.py [--config config/config.yaml]
+Usage: spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 src/streaming_job.py [--config config/config.yaml]
 """
 import argparse
 import os
@@ -24,7 +28,7 @@ os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 from pymongo import MongoClient, ReplaceOne
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, floor, to_timestamp, window, count, avg, concat_ws
+from pyspark.sql.functions import col, floor, to_timestamp, window, count, avg, concat_ws, from_json
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import load_config, STATES_SCHEMA  # noqa: E402
@@ -33,24 +37,22 @@ EMERGENCY_SQUAWKS = ("7500", "7600", "7700")  # kode transponder darurat standar
 DENSITY_SPIKE_FACTOR = 3.0  # anomali = kepadatan zona > 3x rata-rata baseline 1 jam terakhir
 
 
-def _as_file_uri(path: str) -> str:
-    """Path lokal Windows (mis. 'D:/bigdata/landing_stream') perlu skema
-    eksplisit 'file:///' karena fs.defaultFS di cluster ini adalah HDFS."""
-    if "://" in path:
-        return path
-    return "file:///" + path.lstrip("/")
-
-
 def build_base_stream(spark, cfg):
     """Bangun streaming DataFrame dasar yang dipakai ketiga query (q1/q2/q3):
-    baca file JSON baru dari landing_stream/ sebagai stream, lalu tambah
-    kolom turunan `zone` (grid 1 derajat) dan `event_time` (untuk watermark)."""
-    df = (
-        spark.readStream.format("json")
-        .schema(STATES_SCHEMA)  # skema WAJIB eksplisit untuk file source (Spark tidak infer di mode streaming)
-        .option("maxFilesPerTrigger", 10)  # batasi file per micro-batch, jaga latensi tetap rendah & stabil
-        .load(_as_file_uri(cfg["paths"]["landing_stream"]))
+    baca pesan baru dari Kafka topic opensky.states (ditulis ingest.py) sebagai
+    stream, parse value (JSON) sesuai STATES_SCHEMA, lalu tambah kolom turunan
+    `zone` (grid 1 derajat) dan `event_time` (untuk watermark)."""
+    raw = (
+        spark.readStream.format("kafka")
+        .option("kafka.bootstrap.servers", cfg["kafka"]["bootstrap_servers"])
+        .option("subscribe", cfg["kafka"]["topic"])
+        .option("startingOffsets", "latest")  # jalur live, bukan replay historis -- mulai dari pesan terbaru
+        .option("maxOffsetsPerTrigger", 2000)  # batasi pesan per micro-batch, jaga latensi tetap rendah & stabil
+        .load()
     )
+    df = raw.select(
+        from_json(col("value").cast("string"), STATES_SCHEMA).alias("data")
+    ).select("data.*")
     return df.withColumn("zone", concat_ws("_", floor(col("lat")), floor(col("lon")))).withColumn(
         "event_time", to_timestamp(col("ts"))
     )
@@ -211,7 +213,12 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     base = build_base_stream(spark, cfg)
-    checkpoint_base = cfg["paths"]["checkpoint"]
+    # Suffix "_kafka" baru -- checkpoint lama (file source landing_stream/)
+    # menyimpan offset dalam format yang tidak kompatibel dengan Kafka source
+    # (mekanisme tracking beda total). Path baru = mulai fresh, tidak perlu
+    # hapus manual checkpoint lama (checkpoint lama dibiarkan begitu saja,
+    # tidak pernah dibaca lagi setelah ini).
+    checkpoint_base = cfg["paths"]["checkpoint"] + "_kafka"
 
     # --- Query 1: live_states (posisi terkini per pesawat) ---
     # checkpointLocation TERPISAH per query -- masing-masing query punya
