@@ -23,7 +23,7 @@ import urllib3.util.connection as _urllib3_conn
 # resolusi IPv4-only supaya tidak kena delay itu.
 _urllib3_conn.allowed_gai_family = lambda: socket.AF_INET
 
-_MAX_PARALLEL_READS = 16
+_MAX_PARALLEL_READS = 16  # batas thread pool baca part-file paralel (lihat read_partition)
 
 _WEBHDFS_BASE = "http://localhost:9870/webhdfs/v1"
 
@@ -36,6 +36,8 @@ _DT_DIR_RE = re.compile(r"^dt=(\d{4}-\d{2}-\d{2})$")
 
 
 def _list_status(hdfs_path):
+    """WebHDFS LISTSTATUS -- setara `hdfs dfs -ls`, mengembalikan daftar
+    entri (file/direktori) di satu path."""
     resp = requests.get(f"{_WEBHDFS_BASE}{hdfs_path}", params={"op": "LISTSTATUS"}, timeout=15)
     if resp.status_code == 404:
         raise ParquetPartitionNotFound(hdfs_path)
@@ -44,6 +46,8 @@ def _list_status(hdfs_path):
 
 
 def _read_file_bytes(hdfs_path):
+    """WebHDFS OPEN -- baca isi satu file HDFS langsung sebagai bytes (WebHDFS
+    otomatis meng-handle redirect ke DataNode di balik layar untuk operasi OPEN)."""
     resp = requests.get(f"{_WEBHDFS_BASE}{hdfs_path}", params={"op": "OPEN"}, timeout=30)
     resp.raise_for_status()
     return resp.content

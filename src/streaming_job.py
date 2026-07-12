@@ -29,8 +29,8 @@ from pyspark.sql.functions import col, floor, to_timestamp, window, count, avg, 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import load_config, STATES_SCHEMA  # noqa: E402
 
-EMERGENCY_SQUAWKS = ("7500", "7600", "7700")
-DENSITY_SPIKE_FACTOR = 3.0
+EMERGENCY_SQUAWKS = ("7500", "7600", "7700")  # kode transponder darurat standar penerbangan internasional
+DENSITY_SPIKE_FACTOR = 3.0  # anomali = kepadatan zona > 3x rata-rata baseline 1 jam terakhir
 
 
 def _as_file_uri(path: str) -> str:
@@ -42,10 +42,13 @@ def _as_file_uri(path: str) -> str:
 
 
 def build_base_stream(spark, cfg):
+    """Bangun streaming DataFrame dasar yang dipakai ketiga query (q1/q2/q3):
+    baca file JSON baru dari landing_stream/ sebagai stream, lalu tambah
+    kolom turunan `zone` (grid 1 derajat) dan `event_time` (untuk watermark)."""
     df = (
         spark.readStream.format("json")
-        .schema(STATES_SCHEMA)
-        .option("maxFilesPerTrigger", 10)
+        .schema(STATES_SCHEMA)  # skema WAJIB eksplisit untuk file source (Spark tidak infer di mode streaming)
+        .option("maxFilesPerTrigger", 10)  # batasi file per micro-batch, jaga latensi tetap rendah & stabil
         .load(_as_file_uri(cfg["paths"]["landing_stream"]))
     )
     return df.withColumn("zone", concat_ws("_", floor(col("lat")), floor(col("lon")))).withColumn(
@@ -54,12 +57,18 @@ def build_base_stream(spark, cfg):
 
 
 def make_mongo_client(cfg):
+    # Dibuat baru per pemanggilan foreachBatch (bukan dibagi/global) --
+    # foreachBatch bisa dieksekusi di banyak partisi/executor berbeda,
+    # dan MongoClient tidak aman dipakai lintas proses tanpa penanganan khusus.
     return MongoClient(cfg["mongo"]["uri"])
 
 
 def upsert_live_states(cfg):
+    """Query 1: untuk tiap micro-batch, upsert posisi terkini tiap pesawat ke
+    koleksi `live_states` (kunci = icao24) -- ini yang dibaca WebSocket
+    /ws/live lewat MongoDB change stream untuk menggerakkan peta di frontend."""
     def _fn(batch_df, batch_id):
-        rows = batch_df.collect()
+        rows = batch_df.collect()  # micro-batch kecil (maks 10 file), aman ditarik ke driver
         if not rows:
             return
         client = make_mongo_client(cfg)
@@ -67,7 +76,7 @@ def upsert_live_states(cfg):
         ops = []
         for r in rows:
             doc = {
-                "_id": r["icao24"],
+                "_id": r["icao24"],  # upsert by icao24 -> tidak mungkin duplikat per pesawat (exactly-once)
                 "callsign": r["callsign"],
                 "origin_country": r["origin_country"],
                 "lat": r["lat"],
@@ -82,13 +91,16 @@ def upsert_live_states(cfg):
             }
             ops.append(ReplaceOne({"_id": r["icao24"]}, doc, upsert=True))
         if ops:
-            db.live_states.bulk_write(ops)
+            db.live_states.bulk_write(ops)  # 1 round-trip untuk seluruh batch, bukan per-dokumen
         client.close()
 
     return _fn
 
 
 def insert_emergency_alerts(cfg):
+    """Query 3: baris dengan squawk darurat (di-filter SEBELUM sampai sini,
+    lihat main()) langsung dicatat sebagai alert baru -- setiap kemunculan
+    dicatat (insert, bukan upsert), karena tiap kejadian relevan untuk log."""
     def _fn(batch_df, batch_id):
         rows = batch_df.collect()
         if not rows:
@@ -115,6 +127,10 @@ def insert_emergency_alerts(cfg):
 
 
 def upsert_zone_stats_and_detect_spike(cfg):
+    """Query 2: untuk tiap window 2 menit per zona, simpan statistik
+    (jumlah pesawat, rata-rata kecepatan) ke `zone_stats`, DAN bandingkan
+    dengan baseline 1 jam terakhir untuk zona yang sama -- kalau melonjak
+    > DENSITY_SPIKE_FACTOR kali lipat, catat sebagai alert anomali."""
     def _fn(batch_df, batch_id):
         rows = batch_df.collect()
         if not rows:
@@ -133,6 +149,8 @@ def upsert_zone_stats_and_detect_spike(cfg):
             aircraft_count = r["aircraft_count"]
             avg_velocity = r["avg_velocity_ms"]
 
+            # Kunci dokumen = "{zona}_{window_start}" -> upsert idempoten,
+            # window yang sama diproses ulang (mis. late data) tidak menduplikasi baris.
             zone_ops.append(
                 ReplaceOne(
                     {"_id": f"{zone}_{window_start}"},
@@ -149,6 +167,9 @@ def upsert_zone_stats_and_detect_spike(cfg):
                 )
             )
 
+            # Ambil histori zona yang sama dalam 1 jam terakhir (sebelum window
+            # ini) dari MongoDB sendiri sebagai baseline pembanding -- deteksi
+            # anomali "on the fly" tanpa perlu state store Spark terpisah.
             if one_hour_ago_epoch is None:
                 one_hour_ago_epoch = window_start - 3600
             baseline_docs = list(
@@ -192,13 +213,20 @@ def main():
     base = build_base_stream(spark, cfg)
     checkpoint_base = cfg["paths"]["checkpoint"]
 
+    # --- Query 1: live_states (posisi terkini per pesawat) ---
+    # checkpointLocation TERPISAH per query -- masing-masing query punya
+    # progress/offset tracking sendiri, jadi kalau salah satu di-restart,
+    # yang lain tidak ikut mengulang dari awal.
     q1 = (
         base.writeStream.foreachBatch(upsert_live_states(cfg))
         .option("checkpointLocation", f"{checkpoint_base}/q1_live_states")
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime="10 seconds")  # micro-batch tiap 10 detik
         .start()
     )
 
+    # --- Query 3: alerts darurat (squawk 7500/7600/7700) ---
+    # Filter squawk darurat dilakukan di level Spark SEBELUM foreachBatch,
+    # supaya micro-batch yang dikirim ke MongoDB memang hanya baris relevan.
     q3 = (
         base.filter(col("squawk").isin(list(EMERGENCY_SQUAWKS)))
         .writeStream.foreachBatch(insert_emergency_alerts(cfg))
@@ -207,20 +235,23 @@ def main():
         .start()
     )
 
+    # --- Query 2: zone_stats (agregasi berjendela 2 menit per zona) ---
     zone_agg = (
-        base.withWatermark("event_time", "1 minute")
+        base.withWatermark("event_time", "1 minute")  # toleransi data telat 1 menit sebelum window ditutup
         .dropDuplicates(["icao24", "ts"])  # baris duplikat (retry ingest, dsb) tidak menggandakan count
         .groupBy(window(col("event_time"), "2 minutes"), col("zone"))
         .agg(count("*").alias("aircraft_count"), avg("velocity_ms").alias("avg_velocity_ms"))
     )
     q2 = (
-        zone_agg.writeStream.outputMode("update")
+        zone_agg.writeStream.outputMode("update")  # "update": kirim baris yang berubah saja, bukan snapshot penuh tiap trigger
         .foreachBatch(upsert_zone_stats_and_detect_spike(cfg))
         .option("checkpointLocation", f"{checkpoint_base}/q2_zone_stats")
         .trigger(processingTime="10 seconds")
         .start()
     )
 
+    # Blokir proses utama sampai salah satu query berhenti/gagal -- ketiganya
+    # jalan konkuren di thread Spark internal masing-masing.
     for q in (q1, q2, q3):
         q.awaitTermination()
 

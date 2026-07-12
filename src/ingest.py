@@ -17,23 +17,31 @@ from urllib.parse import urlparse
 
 import requests
 
+# Endpoint WebHDFS (bukan HDFS native client) -- lihat _put_to_hdfs() di bawah
+# untuk alasannya (bug hdfs.cmd di Windows dengan path yang mengandung '=').
 _WEBHDFS_BASE = "http://localhost:9870/webhdfs/v1"
 
+# Supaya "from common import ..." bisa jalan walau script ini dipanggil dari
+# direktori lain (mis. dari scripts/*.ps1 yang cd ke root repo dulu).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import flatten, load_config  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("ingest")
 
+# Cache token OAuth2 di memori proses -- OpenSky token berlaku ~30 menit,
+# jadi tidak perlu request token baru di setiap polling (hemat request & lebih cepat).
 _token_cache = {"access_token": None, "expires_at": 0}
 
 
 def get_token(cfg):
     """OAuth2 client-credentials ke OpenSky, cache token sampai expiry."""
     now = time.time()
+    # Masih ada token yang valid (dengan buffer 30 dtk sebelum expiry asli) -> pakai lagi.
     if _token_cache["access_token"] and now < _token_cache["expires_at"] - 30:
         return _token_cache["access_token"]
 
+    # Token belum ada / sudah kedaluwarsa -> minta token baru ke OpenSky.
     resp = requests.post(
         cfg["opensky"]["token_url"],
         data={
@@ -51,6 +59,9 @@ def get_token(cfg):
 
 
 def credits_for_bbox(bbox):
+    """Hitung biaya kredit OpenSky berdasarkan luas bounding box (deg^2) --
+    aturan resmi OpenSky: makin luas area yang diminta, makin mahal per
+    panggilan. Dipakai untuk melacak sisa kuota harian (4000 kredit/hari)."""
     area = (bbox["lamax"] - bbox["lamin"]) * (bbox["lomax"] - bbox["lomin"])
     if area <= 25:
         return 1
@@ -78,6 +89,8 @@ def fetch_states(cfg, tier, max_retries=3):
         "lomax": bbox["lomax"],
     }
     last_err = None
+    # Sampai max_retries kali percobaan; tiap gagal, tunggu makin lama
+    # sebelum coba lagi (exponential backoff: 2 dtk, lalu 4 dtk, lalu 8 dtk).
     for attempt in range(max_retries):
         try:
             if chaos_latency > 0:
@@ -95,13 +108,19 @@ def fetch_states(cfg, tier, max_retries=3):
             return resp.json()
         except Exception as exc:  # noqa: BLE001 - network errors of many shapes
             last_err = exc
-            wait = 2 ** (attempt + 1)
+            wait = 2 ** (attempt + 1)  # 2, 4, 8 detik
             log.warning("fetch_states(%s) attempt %d failed: %s; retry in %ds", tier, attempt + 1, exc, wait)
             time.sleep(wait)
+    # Semua percobaan gagal -> lempar exception ke pemanggil (poll_once akan
+    # menangkapnya, log error, dan lanjut ke tier berikutnya tanpa crash total).
     raise RuntimeError(f"fetch_states({tier}) failed after {max_retries} attempts") from last_err
 
 
 def _write_ndjson_atomic(rows, dest_dir: Path, filename: str):
+    """Tulis file lalu rename, bukan tulis langsung ke nama final -- supaya
+    Structured Streaming (yang memantau folder ini) tidak pernah membaca
+    file yang sedang setengah ditulis. `rename` di filesystem lokal bersifat
+    atomik, jadi file cuma "muncul" begitu isinya sudah lengkap."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_dir / f"{filename}.tmp"
     final_path = dest_dir / filename
@@ -118,6 +137,9 @@ def _put_to_hdfs(local_path: Path, hdfs_dir: str):
     partisi Hive-style gagal dibuat lewat CLI. WebHDFS tidak kena bug ini."""
     hdfs_path = f"{hdfs_dir}/{local_path.name}"
     create_url = f"{_WEBHDFS_BASE}{hdfs_path}"
+    # Langkah 1: minta NameNode buatkan file & redirect ke DataNode yang
+    # benar-benar menyimpan datanya (WebHDFS protokol 2 langkah: 307 dulu,
+    # baru upload ke Location yang dikembalikan).
     resp = requests.put(
         create_url,
         params={"op": "CREATE", "overwrite": "true", "user.name": "Administrator"},
@@ -128,6 +150,7 @@ def _put_to_hdfs(local_path: Path, hdfs_dir: str):
         resp.raise_for_status()
         raise RuntimeError(f"WebHDFS CREATE tidak me-redirect (status {resp.status_code}): {resp.text}")
 
+    # Langkah 2: upload isi file sungguhan ke URL DataNode dari header Location.
     datanode_url = resp.headers["Location"]
     with open(local_path, "rb") as f:
         resp2 = requests.put(datanode_url, data=f.read(), timeout=30)
@@ -141,6 +164,8 @@ def write_outputs(raw, flat_rows, tier, cfg, ts):
     ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     filename = f"states_{tier}_{ts_str}.json"
 
+    # (1) Simpan respons MENTAH (belum di-flatten) ke HDFS sebagai arsip
+    # permanen -- ini yang dibaca ulang oleh batch_job.py setiap hari.
     with tempfile.TemporaryDirectory() as tmp:
         raw_path = Path(tmp) / filename
         raw_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -149,16 +174,25 @@ def write_outputs(raw, flat_rows, tier, cfg, ts):
         try:
             _put_to_hdfs(raw_path, hdfs_dir)
         except Exception as exc:  # noqa: BLE001
+            # Gagal tulis ke HDFS TIDAK menghentikan proses ingest -- data tetap
+            # sempat ditulis ke landing_stream/recordings di bawah, jadi
+            # streaming tetap dapat data walau arsip HDFS-nya sempat bolong.
             log.error("gagal menulis raw ke HDFS: %s", exc)
 
+    # (2) Salinan sudah DI-FLATTEN (baris per pesawat) ke landing_stream/ --
+    # inilah folder yang dipantau streaming_job.py sebagai file source.
     landing_dir = Path(cfg["paths"]["landing_stream"])
     _write_ndjson_atomic(flat_rows, landing_dir, filename)
 
+    # (3) Salinan yang sama juga disimpan ke recordings/ -- arsip lokal untuk
+    # replay.py (demo offline kalau internet/kuota OpenSky bermasalah).
     recordings_dir = Path(cfg["paths"]["recordings"])
     _write_ndjson_atomic(flat_rows, recordings_dir, filename)
 
 
 def poll_once(cfg, tier):
+    """Satu siklus lengkap untuk satu tier: ambil data -> flatten -> tulis ke
+    3 tujuan (HDFS raw, landing_stream, recordings) -> hitung kredit terpakai."""
     now = time.time()
     raw = fetch_states(cfg, tier)
     flat_rows = flatten(raw, tier, fetched_at=int(now))
@@ -176,16 +210,23 @@ def main():
 
     cfg = load_config(args.config)
     tiers = cfg["opensky"]["tiers"]
+    # next_run[tier]: kapan tier itu boleh di-poll lagi (epoch time). Dimulai
+    # 0 supaya SEMUA tier langsung di-poll begitu proses start, bukan menunggu
+    # interval_s pertama kali.
     next_run = {tier: 0.0 for tier in tiers}
     credits_today = 0
     credits_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     log.info("ingest.py dimulai, tiers=%s", list(tiers.keys()))
 
+    # Loop utama: tiap tier (mis. "java" tiap 60 dtk, "national" tiap 15 mnt)
+    # dicek independen apakah sudah waktunya di-poll lagi -- bukan satu
+    # interval global, karena tiap tier punya kuota/frekuensi berbeda (§2 desain).
     while True:
         now = time.time()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if today != credits_date:
+            # Ganti hari (UTC) -> reset penghitung kredit harian.
             credits_date = today
             credits_today = 0
 
@@ -195,12 +236,14 @@ def main():
                     credits_today += poll_once(cfg, tier)
                     log.info("kredit terpakai hari ini: %d/4000", credits_today)
                 except Exception as exc:  # noqa: BLE001
+                    # Satu tier gagal (mis. fetch_states habis retry) tidak
+                    # menghentikan tier lain maupun loop utama -- dicatat lalu lanjut.
                     log.error("poll_once(%s) gagal: %s", tier, exc)
                 next_run[tier] = now + bbox["interval_s"]
 
         if args.once:
             break
-        time.sleep(1)
+        time.sleep(1)  # cek ulang tiap 1 detik apakah ada tier yang jatuh tempo
 
 
 if __name__ == "__main__":

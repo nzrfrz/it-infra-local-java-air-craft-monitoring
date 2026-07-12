@@ -15,6 +15,8 @@ _USER = "Administrator"
 def main():
     local_path, hdfs_path = sys.argv[1], sys.argv[2]
 
+    # Langkah 1: minta NameNode buatkan file & redirect ke DataNode tujuan
+    # (protokol WebHDFS 2-langkah: 307 dulu, baru upload byte sungguhan).
     create_resp = requests.put(
         f"{_WEBHDFS_BASE}{hdfs_path}",
         params={"op": "CREATE", "overwrite": "true", "user.name": _USER},
@@ -27,6 +29,7 @@ def main():
             f"WebHDFS CREATE tidak me-redirect utk {hdfs_path}: {create_resp.status_code} {create_resp.text}"
         )
     datanode_url = create_resp.headers["Location"]
+    # Langkah 2: upload isi file sungguhan ke DataNode.
     with open(local_path, "rb") as f:
         put_resp = requests.put(datanode_url, data=f.read(), timeout=60)
     put_resp.raise_for_status()

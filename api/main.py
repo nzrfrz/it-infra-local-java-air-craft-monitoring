@@ -22,6 +22,8 @@ from common import load_config  # noqa: E402
 
 from api.hdfs_read import ParquetPartitionNotFound, list_raw_dates, read_partition  # noqa: E402
 
+# Koneksi Mongo & config dibuat SEKALI saat modul di-import (bukan per
+# request) -- dipakai bersama oleh semua endpoint & WebSocket handler.
 cfg = load_config()
 mongo_client = MongoClient(cfg["mongo"]["uri"])
 db = mongo_client[cfg["mongo"]["db"]]
@@ -29,18 +31,26 @@ db = mongo_client[cfg["mongo"]["db"]]
 app = FastAPI(title="OpenSky Big Data Pipeline API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173"],  # dev server Vite frontend
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Koleksi Mongo yang perubahannya di-broadcast lewat WebSocket -- koleksi
+# lain (mis. daily_snapshot, hanya ditulis batch_job.py 1x/hari) sengaja
+# tidak dipantau, tidak relevan untuk push realtime.
 _WATCHED_COLLECTIONS = {"live_states", "zone_stats", "alerts"}
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Lock supaya hanya 1 refresh batch job yang boleh berjalan bersamaan --
+# spark-submit sendiri sudah berat, 2 proses batch bersamaan bisa berebut
+# resource lokal (CPU/memori) dan saling memperlambat.
 _refresh_lock = asyncio.Lock()
 
 
 def _serialize_doc(doc):
+    """Dokumen Mongo tidak bisa langsung di-JSON-kan (ObjectId, datetime) --
+    ubah ke string/ISO format dulu."""
     out = {}
     for k, v in doc.items():
         if k == "_id":
@@ -53,6 +63,8 @@ def _serialize_doc(doc):
 
 
 def _serialize_live_state(doc):
+    """live_states memakai icao24 sebagai _id (bukan ObjectId) -- ganti nama
+    field _id jadi icao24 di output supaya lebih jelas dibaca frontend."""
     out = _serialize_doc(doc)
     out["icao24"] = out.pop("_id")
     return out
@@ -65,6 +77,8 @@ def _serialize_live_state(doc):
 
 @app.get("/api/history/summary")
 def history_summary(date: str):
+    """Ringkasan satu hari (total record, pesawat unik, jam tersibuk, top
+    maskapai) -- dibaca langsung dari MongoDB (ditulis batch_job.py), bukan Parquet."""
     doc = db.daily_snapshot.find_one({"_id": date})
     if doc is None:
         raise HTTPException(status_code=404, detail=f"daily_snapshot belum ada untuk tanggal {date}")
@@ -73,6 +87,10 @@ def history_summary(date: str):
 
 @app.get("/api/history/hourly")
 def history_hourly(date: str):
+    """Jumlah pesawat & rata-rata kecepatan per jam (0-23) untuk satu
+    tanggal -- dipakai chart tren per jam di tab History. Dihitung di
+    Python (bukan query Parquet langsung) karena volume per hari kecil
+    dan agregasinya sederhana."""
     try:
         table = read_partition(cfg["hdfs"]["base"], "states_clean", date)
     except ParquetPartitionNotFound:
@@ -87,7 +105,7 @@ def history_hourly(date: str):
     for ts, vel in zip(ts_list, vel_list):
         h = datetime.fromtimestamp(ts, tz=timezone.utc).hour
         counts[h] += 1
-        if vel is not None:
+        if vel is not None:  # sebagian baris tidak punya data kecepatan -- jangan ikut dirata-rata
             vel_sums[h] += vel
             vel_counts[h] += 1
 
@@ -104,6 +122,8 @@ def history_hourly(date: str):
 
 @app.get("/api/history/density")
 def history_density(date: str):
+    """Total pesawat per sel grid (lintas semua jam) untuk satu tanggal --
+    dipakai DensityHeatmap.tsx merender heatmap kepadatan."""
     try:
         table = read_partition(cfg["hdfs"]["base"], "density_grid_hourly", date)
     except ParquetPartitionNotFound:
@@ -112,24 +132,33 @@ def history_density(date: str):
     zones = table.column("grid_cell").to_pylist()
     counts = table.column("aircraft_count").to_pylist()
 
+    # Data Parquet sudah per (grid_cell, hour) -- jumlahkan lintas jam
+    # supaya jadi total kepadatan per grid_cell saja.
     totals = {}
     for zone, count in zip(zones, counts):
         totals[zone] = totals.get(zone, 0) + count
 
     cells = []
     for zone, count in totals.items():
-        lat_str, lon_str = zone.split("_")
+        lat_str, lon_str = zone.split("_")  # grid_cell format "{lat}_{lon}", lihat common.zone_for
         cells.append({"zone": zone, "lat": int(lat_str), "lon": int(lon_str), "count": count})
     return {"date": date, "cells": cells}
 
 
 @app.get("/api/history/available-dates")
 def history_available_dates():
+    """List tanggal yang PUNYA RAW DATA (bukan yang sudah pernah di-batch) --
+    dipakai frontend untuk menonaktifkan tombol UPDATE pada tanggal yang
+    memang mustahil di-refresh (OpenSky live-only, tidak bisa backfill)."""
     return {"dates": list_raw_dates(cfg["hdfs"]["base"])}
 
 
 @app.post("/api/history/refresh")
 async def history_refresh(date: str):
+    """Jalankan batch_job.py untuk satu tanggal dari tombol UPDATE di
+    frontend (menggantikan menjalankan scripts/run_batch_daily.ps1 manual
+    di terminal). Blocking sampai job selesai (~30 detik), dilindungi lock
+    supaya tidak ada 2 refresh berjalan bersamaan."""
     if not _DATE_RE.match(date):
         raise HTTPException(status_code=400, detail="date harus format YYYY-MM-DD")
 
@@ -172,7 +201,7 @@ async def history_refresh(date: str):
             detail=f"Belum ada data mentah (raw) untuk tanggal {date} -- ingest.py tidak berjalan pada tanggal itu",
         )
     if proc.returncode != 0:
-        tail = stderr.decode(errors="replace")[-2000:]
+        tail = stderr.decode(errors="replace")[-2000:]  # potong stderr Spark yang bisa sangat panjang
         raise HTTPException(status_code=500, detail=f"batch_job.py gagal (exit {proc.returncode}): {tail}")
 
     return {"date": date, "status": "ok"}
@@ -180,6 +209,8 @@ async def history_refresh(date: str):
 
 @app.get("/api/live/states")
 def live_states():
+    """Snapshot semua posisi pesawat terkini -- dipakai sebagai fallback REST
+    (mis. debugging) di luar jalur WebSocket utama."""
     docs = db.live_states.find({})
     return {"states": [_serialize_live_state(d) for d in docs]}
 
@@ -190,6 +221,9 @@ def live_states():
 
 
 class ConnectionManager:
+    """Menyimpan daftar klien WebSocket yang sedang terhubung, supaya satu
+    perubahan di MongoDB bisa di-broadcast ke SEMUA klien sekaligus."""
+
     def __init__(self):
         self.active: list[WebSocket] = []
 
@@ -207,12 +241,17 @@ class ConnectionManager:
             try:
                 await ws.send_json(message)
             except Exception:
+                # Koneksi yang gagal dikirim (klien sudah tutup tab, dsb)
+                # ditandai untuk dibersihkan, tapi tidak menghentikan
+                # broadcast ke klien lain yang masih hidup.
                 dead.append(ws)
         for ws in dead:
             self.disconnect(ws)
 
 
 manager = ConnectionManager()
+# Antrean perantara antara thread pemantau Mongo (sinkron) dan event loop
+# asyncio utama (yang mengirim WebSocket) -- lihat _watch_changes() & _broadcast_consumer().
 _change_queue: asyncio.Queue = asyncio.Queue()
 _main_loop: asyncio.AbstractEventLoop | None = None
 
@@ -224,7 +263,7 @@ def _watch_changes():
     resume_token = None
     while True:
         try:
-            kwargs = {"full_document": "updateLookup"}
+            kwargs = {"full_document": "updateLookup"}  # sertakan isi dokumen penuh, bukan cuma diff
             if resume_token is not None:
                 kwargs["resume_after"] = resume_token
             with db.watch(**kwargs) as stream:
@@ -238,6 +277,9 @@ def _watch_changes():
                         continue
                     serialize = _serialize_live_state if coll == "live_states" else _serialize_doc
                     message = {"channel": coll, "data": serialize(doc)}
+                    # call_soon_threadsafe: thread ini BUKAN thread event loop
+                    # asyncio, jadi tidak boleh memanggil put_nowait langsung --
+                    # harus lewat jembatan thread-safe ini.
                     if _main_loop is not None:
                         _main_loop.call_soon_threadsafe(_change_queue.put_nowait, message)
         except Exception as exc:
@@ -246,6 +288,8 @@ def _watch_changes():
 
 
 async def _broadcast_consumer():
+    """Task asyncio yang terus mengambil pesan dari antrean (diisi thread
+    _watch_changes) dan mem-broadcast-nya ke semua klien WebSocket."""
     while True:
         message = await _change_queue.get()
         await manager.broadcast(message)
@@ -253,6 +297,9 @@ async def _broadcast_consumer():
 
 @app.on_event("startup")
 async def on_startup():
+    """Dijalankan sekali saat FastAPI start: nyalakan thread pemantau
+    change stream Mongo (daemon=True -> otomatis mati saat proses utama mati)
+    dan task consumer yang meneruskan pesannya ke WebSocket."""
     global _main_loop
     _main_loop = asyncio.get_event_loop()
     threading.Thread(target=_watch_changes, daemon=True).start()
@@ -261,12 +308,18 @@ async def on_startup():
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket):
+    """Endpoint WebSocket utama peta live: kirim snapshot awal begitu klien
+    connect (supaya peta langsung terisi, tidak menunggu perubahan
+    berikutnya), lalu terus terhubung menerima broadcast dari
+    _broadcast_consumer sampai klien memutus koneksi."""
     await manager.connect(websocket)
     try:
         docs = db.live_states.find({})
         snapshot = {"channel": "snapshot", "data": {"states": [_serialize_live_state(d) for d in docs]}}
         await websocket.send_json(snapshot)
         while True:
+            # Klien tidak pernah mengirim pesan sungguhan -- baris ini murni
+            # menjaga koneksi tetap terbuka & mendeteksi disconnect lewat exception.
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)

@@ -17,12 +17,15 @@ _USER = "Administrator"
 
 
 def _list(path):
+    """WebHDFS LISTSTATUS -- daftar file di satu direktori HDFS."""
     resp = requests.get(f"{_WEBHDFS_BASE}{path}", params={"op": "LISTSTATUS", "user.name": _USER}, timeout=30)
     resp.raise_for_status()
     return resp.json()["FileStatuses"]["FileStatus"]
 
 
 def _delete(path):
+    """Bersihkan direktori staging tujuan dulu sebelum menyalin ulang --
+    supaya rerun script ini tidak mencampur file dari run sebelumnya."""
     requests.delete(
         f"{_WEBHDFS_BASE}{path}",
         params={"op": "DELETE", "recursive": "true", "user.name": _USER},
@@ -31,6 +34,9 @@ def _delete(path):
 
 
 def _copy_file(src_path, dst_path):
+    """Baca isi file dari src_path (WebHDFS OPEN), lalu tulis ke dst_path
+    (WebHDFS CREATE, 2 langkah: minta redirect DataNode dulu, baru upload
+    -- sama seperti pola _put_to_hdfs di src/ingest.py)."""
     resp = requests.get(f"{_WEBHDFS_BASE}{src_path}", params={"op": "OPEN", "user.name": _USER}, timeout=30)
     resp.raise_for_status()
     content = resp.content
@@ -53,8 +59,8 @@ def _copy_file(src_path, dst_path):
 
 def main():
     date_str = sys.argv[1]
-    src_dir = f"/bigdata/opensky/raw/dt={date_str}"
-    dst_dir = f"/bigdata/opensky/mr-staging/{date_str}"
+    src_dir = f"/bigdata/opensky/raw/dt={date_str}"       # path asli, mengandung '='
+    dst_dir = f"/bigdata/opensky/mr-staging/{date_str}"    # path aman, tanpa '=', dipakai job MapReduce
 
     _delete(dst_dir)
 
