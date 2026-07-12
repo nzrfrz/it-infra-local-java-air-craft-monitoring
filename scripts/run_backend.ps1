@@ -27,12 +27,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root      = Split-Path -Parent $PSScriptRoot
-$venv      = "D:\Coding\#bigdata\venv"
-$venvPy    = Join-Path $venv "Scripts\python.exe"
+# Resolusi venv Python, urutan prioritas (lihat README §Konfigurasi path lokal):
+# 1) BIGDATA_VENV_PYTHON (override eksplisit, mis. venv dipakai bersama lintas project)
+# 2) VIRTUAL_ENV (venv sudah di-activate di shell ini)
+# 3) fallback venv\ self-contained di root repo (default untuk setup baru)
+$venvPy = if ($env:BIGDATA_VENV_PYTHON) {
+    $env:BIGDATA_VENV_PYTHON
+} elseif ($env:VIRTUAL_ENV) {
+    Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"
+} else {
+    Join-Path $root "venv\Scripts\python.exe"
+}
+$venv      = Split-Path -Parent (Split-Path -Parent $venvPy)
 $kafkaHome = $env:KAFKA_HOME  # mis. C:\Kafka\kafka_2.13-3.9.2 -- lihat System Environment Variables
 
 if (-not (Test-Path $venvPy)) {
-    Write-Error "Venv bersama tidak ditemukan di $venvPy. Cek lokasi venv #bigdata."
+    Write-Error "Venv tidak ditemukan di $venvPy. Buat venv sendiri ('python -m venv venv' di root repo) atau set env var BIGDATA_VENV_PYTHON ke python.exe venv yang mau dipakai."
     exit 1
 }
 if (-not $kafkaHome -or -not (Test-Path $kafkaHome)) {

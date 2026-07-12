@@ -36,9 +36,20 @@ if ($svc -and $svc.Status -ne "Running") {
 Get-Service -Name MongoDB
 
 Write-Output "`n=== Verifying MongoDB replica set ==="
-# Resolve python from the shared #bigdata venv explicitly - relying on bare
-# "python" can pick up a system/store install ahead of venv\Scripts on PATH.
-$py = if ($env:VIRTUAL_ENV) { Join-Path $env:VIRTUAL_ENV "Scripts\python.exe" } else { "D:\Coding\#bigdata\venv\Scripts\python.exe" }
+# Resolve python secara eksplisit - relying on bare "python" bisa kepilih
+# system/store install ahead of venv\Scripts on PATH. Urutan resolusi:
+# 1) BIGDATA_VENV_PYTHON (override eksplisit, dipakai kalau venv dipakai
+#    bersama lintas project - lihat README §Konfigurasi path lokal)
+# 2) VIRTUAL_ENV (venv sudah di-activate di shell ini)
+# 3) fallback venv\ self-contained di root repo (default untuk setup baru)
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$py = if ($env:BIGDATA_VENV_PYTHON) {
+    $env:BIGDATA_VENV_PYTHON
+} elseif ($env:VIRTUAL_ENV) {
+    Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"
+} else {
+    Join-Path $repoRoot "venv\Scripts\python.exe"
+}
 & $py -c "from pymongo import MongoClient; c = MongoClient('mongodb://localhost:27017/?replicaSet=rs0&directConnection=true', serverSelectionTimeoutMS=5000); s = c.admin.command('replSetGetStatus'); print('replica set:', s['set'], '| state:', s['myState'])"
 
 Write-Output "`n=== Local folders ==="

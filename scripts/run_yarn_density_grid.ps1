@@ -20,7 +20,22 @@ param(
 # lewat $LASTEXITCODE eksplisit di bawah, bukan lewat exception PowerShell.
 $ErrorActionPreference = "Continue"
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$venvPy = "D:\Coding\#bigdata\venv\Scripts\python.exe"
+# Resolusi venv Python, urutan prioritas (lihat README §Konfigurasi path lokal):
+# 1) BIGDATA_VENV_PYTHON (override eksplisit, mis. venv dipakai bersama lintas project)
+# 2) VIRTUAL_ENV (venv sudah di-activate di shell ini)
+# 3) fallback venv\ self-contained di root repo (default untuk setup baru)
+#
+# Path ini juga dikirim LITERAL sebagai bagian command -mapper/-reducer ke
+# container YARN (job MapReduce single-node lokal, bukan cluster terdistribusi)
+# -- makanya harus absolute path yang valid saat script ini jalan, bukan
+# sekadar nama "python" di PATH.
+$venvPy = if ($env:BIGDATA_VENV_PYTHON) {
+    $env:BIGDATA_VENV_PYTHON
+} elseif ($env:VIRTUAL_ENV) {
+    Join-Path $env:VIRTUAL_ENV "Scripts\python.exe"
+} else {
+    Join-Path $repoRoot "venv\Scripts\python.exe"
+}
 $streamingJar = "$env:HADOOP_HOME\share\hadoop\tools\lib\hadoop-streaming-3.3.6.jar"
 
 # `hadoop.cmd` (dipanggil lewat `hadoop jar`) memotong argumen yang
