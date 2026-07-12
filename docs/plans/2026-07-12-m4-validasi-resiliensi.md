@@ -336,7 +336,7 @@ git commit -m "docs: record chaos experiment 2 result (ingest latency/error inje
 
 **Hipotesis (dari desain §6):** maksimal 1 micro-batch tertunda; recovery dari checkpoint tanpa duplikat. Catatan penting yang sudah diakui di desain: karena `streaming_job.py` tetap `local[*]` (migrasi YARN dibatalkan), "kill executor" di sini berarti kill proses `SparkSubmit` itu sendiri (driver dan executor adalah proses yang sama di local mode) — hipotesis diuji lewat restart query dari checkpoint, bukan lewat kill 1 dari N executor terpisah.
 
-- [ ] **Step 1: Cari PID proses streaming & catat progress checkpoint**
+- [x] **Step 1: Cari PID proses streaming & catat progress checkpoint**
 
 ```powershell
 jps
@@ -344,14 +344,14 @@ jps
 
 Expected: baris `<PID> SparkSubmit` (window "Streaming Job"). Di Spark UI (`http://localhost:4040`, tab Structured Streaming), catat batch ID terakhir yang sukses diproses dan `processedRowsPerSecond`.
 
-- [ ] **Step 2: Kill proses, catat waktu**
+- [x] **Step 2: Kill proses, catat waktu**
 
 ```powershell
 taskkill /PID <PID_SPARKSUBMIT> /F
 Get-Date
 ```
 
-- [ ] **Step 3: Restart streaming_job.py dari checkpoint**
+- [x] **Step 3: Restart streaming_job.py dari checkpoint**
 
 ```powershell
 cd "d:\Coding\#bigdata\it-infra"
@@ -360,11 +360,11 @@ $env:PYSPARK_DRIVER_PYTHON = "D:\Coding\#bigdata\venv\Scripts\python.exe"
 spark-submit src\streaming_job.py
 ```
 
-- [ ] **Step 4: Verifikasi recovery & catat MTTR**
+- [x] **Step 4: Verifikasi recovery & catat MTTR**
 
 Amati Spark UI setelah restart: expected batch pertama setelah restart melanjutkan dari checkpoint (batch ID lanjut dari terakhir, bukan mulai dari 0), `processedRowsPerSecond` kembali stabil dalam beberapa detik. MTTR = waktu dari Step 2 (kill) sampai batch pertama sukses setelah restart di Step 4. Screenshot tab Structured Streaming yang menunjukkan kontinuitas batch ID ini ke `reports/screenshots/chaos3-streaming-recovery.png` — bukti visual utama recovery-from-checkpoint.
 
-- [ ] **Step 5: Verifikasi tidak ada duplikat di MongoDB**
+- [x] **Step 5: Verifikasi tidak ada duplikat di MongoDB**
 
 ```powershell
 & $py -c "from pymongo import MongoClient; c = MongoClient('mongodb://localhost:27017/?replicaSet=rs0&directConnection=true'); print('live_states distinct icao24:', len(c.opensky.live_states.distinct('_id')), '| total docs:', c.opensky.live_states.count_documents({}))"
@@ -372,7 +372,7 @@ Amati Spark UI setelah restart: expected batch pertama setelah restart melanjutk
 
 Expected: kedua angka sama (koleksi `live_states` di-upsert berdasarkan `icao24` sebagai `_id`, jadi tidak mungkin duplikat berdasarkan desain sink-nya — konfirmasi ini, bukan cuma asumsi).
 
-- [ ] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`** (append di bawah Eksperimen 2)
+- [x] **Step 6: Tulis hasil ke `docs/design/hasil-eksperimen-resiliensi.md`** (append di bawah Eksperimen 2)
 
 ```markdown
 ## Eksperimen 3 — Kill proses streaming (taskkill SparkSubmit, `local[*]`)
