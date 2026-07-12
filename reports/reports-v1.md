@@ -30,28 +30,50 @@ Data diambil dari **OpenSky Network** (`/api/states/all`) — jaringan crowdsour
 ## 3. Arsitektur (Pola Lambda)
 
 ```
-AKUISISI
-  OpenSky API -> ingest.py (poller 2-tier: Jawa/60dtk, Indonesia/15mnt)
-                    |
-                    +--> HDFS raw/dt=.../*.json (arsip, schema-on-read)
-                    +--> Kafka topic opensky.states (KRaft, 3 partisi,
-                         key=icao24 -- lihat §3.1 migrasi)
-
-PEMROSESAN
-  BATCH  : batch_job.py (PySpark, harian) -> flatten + dedup + agregasi
-           (kepadatan grid, jam tersibuk, distribusi altitude/velocity,
-           top maskapai) -> Parquet HDFS curated + snapshot MongoDB
-  STREAM : streaming_job.py (Spark Structured Streaming, Kafka source)
-           -> windowed agg 2 menit per zona (watermark 1 menit) +
-           deteksi alert (squawk darurat, lonjakan kepadatan) ->
-           upsert MongoDB, checkpoint ke HDFS
-           (kedua job jalan local[*] - lihat §6 soal migrasi YARN)
-
-SERVING & VISUALISASI
-  api/ (FastAPI): WebSocket /ws/live (forward MongoDB change stream),
-                  REST /api/history/* (baca Parquet curated)
-  web/ (React + deck.gl/MapLibre): peta live via WebSocket push,
-                  panel historis (heatmap, tren) via REST, panel alert
+                        OpenSky Network API (/api/states/all)
+                     poll 2-tier: Jawa 60 dtk, Indonesia 15 mnt
+                                      │
+                                      ▼
+                              ┌───────────────┐
+                              │   ingest.py    │
+                              └───────┬────────┘
+                     ┌─────────────────┴──────────────────┐
+                     ▼                                     ▼
+      HDFS raw/dt=YYYY-MM-DD/*.json           Kafka topic opensky.states
+      (arsip mentah, schema-on-read)          (KRaft, 3 partisi, key=icao24)
+                     │                                     │
+                     ▼                                     ▼
+      ┌──────────────────────────┐          ┌───────────────────────────────┐
+      │      batch_job.py        │          │       streaming_job.py         │
+      │   (PySpark, harian)      │          │  (Spark Structured Streaming)  │
+      │                          │          │  3 query independen, checkpoint│
+      │  flatten -> dedup ->     │          │  terpisah per query:           │
+      │  filter bbox+altitude    │          │   q1 live_states   (upsert)    │
+      │  -> agregasi             │          │   q2 zone_stats    (window 2mnt│
+      │                          │          │       watermark 1mnt) + alert  │
+      │                          │          │       density_spike            │
+      │                          │          │   q3 alerts emergency_squawk   │
+      └────────────┬─────────────┘          └────────────────┬────────────────┘
+                    ▼                                         ▼
+     HDFS curated/ (Parquet):                    MongoDB db `opensky`:
+       - states_clean                              - live_states    (_id=icao24)
+       - density_grid_hourly                        - zone_stats     (_id=zona_window)
+       - airport_hourly                             - alerts         (emergency/density_spike)
+       - daily_summary                              - daily_snapshot (ditulis batch_job.py juga)
+                    │                                         │
+                    └────────────────────┬────────────────────┘
+                                          ▼
+                              ┌────────────────────────┐
+                              │     api/ (FastAPI)       │
+                              │  REST /api/history/*     │ <- baca Parquet curated
+                              │  REST /api/live/states   │ <- snapshot awal dari Mongo
+                              │  WS   /ws/live            │ <- forward MongoDB change stream
+                              └────────────┬─────────────┘
+                                           ▼
+                     web/ (React + Vite + deck.gl/MapLibre)
+                       - LiveMap.tsx     : peta live, ikon pesawat via WebSocket
+                       - AlertsPanel.tsx : log alert real-time
+                       - HistoryView.tsx : chart per jam + heatmap historis via REST
 ```
 
 **Alur ringkas:** `ingest.py` menulis raw JSON ke HDFS + tiap pesawat sebagai 1 pesan ke Kafka topic `opensky.states` → batch job mengagregasi seluruh raw zone harian menjadi Parquet curated → streaming job mengonsumsi Kafka topic secara kontinu, mengagregasi window 2 menit ke MongoDB → FastAPI menjembatani MongoDB (live, via change stream + WebSocket) dan Parquet (historis, via REST) ke dashboard React.
